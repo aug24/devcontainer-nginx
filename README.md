@@ -1,19 +1,26 @@
 # devcontainer-nginx
 
-A high-performance Docker-based reverse proxy that automatically discovers and routes to development containers without requiring per-project configuration.
+A Docker-based reverse proxy that automatically discovers and routes to development containers without requiring per-project configuration.
 
 ## TL;DR
 
+### Start server
 ```bash
 docker build -t devcontainer-nginx:local .
-docker-compose up -d devcontainer-nginx
-
-# Start your app (any container with a name and port)
-docker run -d --name myapp -p 3000:3000 your-app:latest
-
-# Access it
-open https://myapp.local.dev-gutools.co.uk
+docker-compose up -d --build --force-recreate devcontainer-nginx
 ```
+
+### Start your app 
+ - any container or devcontainer with a name and a single port
+ - any devcontainer with ports and portAttributes
+
+eg
+```bash
+docker run -d --name myapp -p 3000:3000 your-app:latest
+```
+
+### Access it
+Open https://myapp.local.dev-gutools.co.uk
 
 See the [quick start guide](./docs/QUICK-START.md) for detailed instructions.
 
