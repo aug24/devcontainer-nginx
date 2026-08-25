@@ -1,0 +1,33 @@
+services:
+  devcontainer-nginx:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: devcontainer-nginx
+    ports:
+      - "443:443"
+    volumes:
+      # Docker socket (read-only for security)
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # TLS certificates (mount your cert directory; can include host-specific files)
+      - ${CERTS_DIR:-./certs}:/etc/nginx/certs:ro
+      # mkcert CA root (macOS default location) — used to sign wildcard certs
+      - "${HOME}/Library/Application Support/mkcert:/etc/nginx/mkcert:ro"
+      # Nginx logs
+      - ./logs:/var/log/nginx
+    environment:
+      BASE_DOMAIN: local.dev-gutools.co.uk
+      DOCKER_SOCKET: /var/run/docker.sock
+      NGINX_CONFIG_PATH: /etc/nginx/conf.d/generated.conf
+      TLS_CERT: /etc/nginx/certs/wildcard.crt
+      TLS_KEY: /etc/nginx/certs/wildcard.key
+      LOCAL_CA_CERT: /etc/nginx/mkcert/rootCA.pem
+      LOCAL_CA_KEY: /etc/nginx/mkcert/rootCA-key.pem
+      DEBOUNCE_MS: "500"
+    networks:
+      - default
+    restart: unless-stopped
+
+networks:
+  default:
+    driver: bridge
