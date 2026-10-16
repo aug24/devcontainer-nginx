@@ -120,7 +120,28 @@ func (cg *ConfigGenerator) ContainerRoutes(containerName string) string {
 
 func (cg *ConfigGenerator) generateDefaultServerBlock() []string {
 	return []string{
-		"# Default server keeps TLS listener active even when no routes exist",
+		"# Default HTTP server keeps port 80 listener active even when no routes exist",
+		"server {",
+		"    listen 80 default_server;",
+		"    server_name _;",
+		"",
+		"    location = /health {",
+		"        add_header Content-Type text/plain;",
+		"        return 200 'ok';",
+		"    }",
+		"",
+		"    location = /_devcontainer-nginx/config {",
+		"        proxy_pass http://127.0.0.1:18080/nginx/config;",
+		"        proxy_set_header Host $host;",
+		"    }",
+		"",
+		"    location / {",
+		"        add_header Content-Type text/plain;",
+		"        return 503 'No route configured';",
+		"    }",
+		"}",
+		"",
+		"# Default HTTPS server keeps TLS listener active even when no routes exist",
 		"server {",
 		"    listen 443 ssl default_server;",
 		"    server_name _;",
@@ -151,29 +172,11 @@ func (cg *ConfigGenerator) generateDefaultServerBlock() []string {
 	}
 }
 
-// generateServerBlock generates a single server block.
+// generateServerBlock generates HTTP and HTTPS server blocks for a single route.
 func (cg *ConfigGenerator) generateServerBlock(route Route) []string {
 	upstreamName := cg.sanitizeUpstreamName(route.Hostname)
 
-	lines := []string{
-		fmt.Sprintf("# Route: %s -> %s:%d", route.Hostname, route.TargetHost, route.TargetPort),
-		fmt.Sprintf("upstream %s {", upstreamName),
-		fmt.Sprintf("    server %s:%d;", route.TargetHost, route.TargetPort),
-		"}",
-		"",
-		"server {",
-		"    listen 443 ssl;",
-		fmt.Sprintf("    server_name %s;", route.Hostname),
-		"",
-		fmt.Sprintf("    ssl_certificate %s;", cg.certPath),
-		fmt.Sprintf("    ssl_certificate_key %s;", cg.keyPath),
-		"    http2 on;",
-		"",
-		"    # TLS configuration",
-		"    ssl_protocols TLSv1.2 TLSv1.3;",
-		"    ssl_ciphers HIGH:!aNULL:!MD5;",
-		"    ssl_prefer_server_ciphers on;",
-		"",
+	proxyLocation := []string{
 		"    location / {",
 		fmt.Sprintf("        proxy_pass http://%s;", upstreamName),
 		"",
@@ -193,13 +196,53 @@ func (cg *ConfigGenerator) generateServerBlock(route Route) []string {
 		"        proxy_send_timeout 60s;",
 		"        proxy_read_timeout 60s;",
 		"    }",
+	}
+
+	lines := []string{
+		fmt.Sprintf("# Route: %s -> %s:%d", route.Hostname, route.TargetHost, route.TargetPort),
+		fmt.Sprintf("upstream %s {", upstreamName),
+		fmt.Sprintf("    server %s:%d;", route.TargetHost, route.TargetPort),
+		"}",
+		"",
+		"# HTTP (port 80)",
+		"server {",
+		"    listen 80;",
+		fmt.Sprintf("    server_name %s;", route.Hostname),
+		"",
+	}
+	lines = append(lines, proxyLocation...)
+	lines = append(lines,
 		"",
 		"    location = /_devcontainer-nginx/config {",
 		"        proxy_pass http://127.0.0.1:18080/nginx/config;",
 		"        proxy_set_header Host $host;",
 		"    }",
 		"}",
-	}
+		"",
+		"# HTTPS (port 443)",
+		"server {",
+		"    listen 443 ssl;",
+		fmt.Sprintf("    server_name %s;", route.Hostname),
+		"",
+		fmt.Sprintf("    ssl_certificate %s;", cg.certPath),
+		fmt.Sprintf("    ssl_certificate_key %s;", cg.keyPath),
+		"    http2 on;",
+		"",
+		"    # TLS configuration",
+		"    ssl_protocols TLSv1.2 TLSv1.3;",
+		"    ssl_ciphers HIGH:!aNULL:!MD5;",
+		"    ssl_prefer_server_ciphers on;",
+		"",
+	)
+	lines = append(lines, proxyLocation...)
+	lines = append(lines,
+		"",
+		"    location = /_devcontainer-nginx/config {",
+		"        proxy_pass http://127.0.0.1:18080/nginx/config;",
+		"        proxy_set_header Host $host;",
+		"    }",
+		"}",
+	)
 
 	return lines
 }

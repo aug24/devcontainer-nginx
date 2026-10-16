@@ -5,6 +5,7 @@ services:
       dockerfile: Dockerfile
     container_name: devcontainer-nginx
     ports:
+      - "80:80"
       - "443:443"
     volumes:
       # Docker socket (read-only for security)

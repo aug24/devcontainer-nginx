@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"html"
 	"log"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -22,16 +23,22 @@ type ContainerDiagnostic struct {
 }
 
 type DiagnosticsState struct {
-	mu   sync.RWMutex
-	rows []ContainerDiagnostic
+	mu       sync.RWMutex
+	rows     []ContainerDiagnostic
+	revision uint64
 }
 
 func (ds *DiagnosticsState) Set(rows []ContainerDiagnostic) {
 	ds.mu.Lock()
 	defer ds.mu.Unlock()
 
+	if reflect.DeepEqual(ds.rows, rows) {
+		return
+	}
+
 	ds.rows = make([]ContainerDiagnostic, len(rows))
 	copy(ds.rows, rows)
+	ds.revision++
 }
 
 func (ds *DiagnosticsState) Snapshot() []ContainerDiagnostic {
@@ -41,6 +48,12 @@ func (ds *DiagnosticsState) Snapshot() []ContainerDiagnostic {
 	rows := make([]ContainerDiagnostic, len(ds.rows))
 	copy(rows, ds.rows)
 	return rows
+}
+
+func (ds *DiagnosticsState) Revision() uint64 {
+	ds.mu.RLock()
+	defer ds.mu.RUnlock()
+	return ds.revision
 }
 
 func diagnoseContainer(
@@ -281,12 +294,12 @@ func parseDiagnosticsPortsAttributes(doc map[string]any) map[int]string {
 	return out
 }
 
-func renderDiagnosticsHTML(rows []ContainerDiagnostic) string {
+func renderHomepageHTML(rows []ContainerDiagnostic, revision uint64) string {
 	var b strings.Builder
-	b.WriteString("<!doctype html><html><head><meta charset=\"utf-8\"><title>devcontainer-nginx diagnostics</title>")
-	b.WriteString("<style>body{font-family:system-ui,sans-serif;margin:24px}table{border-collapse:collapse;width:100%}th,td{border:1px solid #ccc;padding:8px;vertical-align:top;text-align:left}th{background:#f5f5f5}.ok{color:#0a7}.skip{color:#b50}.partial{color:#a60}</style>")
+	b.WriteString("<!doctype html><html><head><meta charset=\"utf-8\"><title>devcontainer-nginx homepage</title>")
+	b.WriteString("<style>body{font-family:system-ui,sans-serif;margin:24px}table{border-collapse:collapse;width:100%}th,td{border:1px solid #ccc;padding:8px;vertical-align:top;text-align:left}th{background:#f5f5f5}.ok{color:#0a7}.skip{color:#b50}.partial{color:#a60}.proto-badge{display:inline-block;font-size:0.7em;font-weight:700;padding:1px 5px;border-radius:3px;margin-right:4px;vertical-align:middle;letter-spacing:.04em}.proto-https{background:#1a6fa8;color:#fff}.proto-http{background:#888;color:#fff}</style>")
 	b.WriteString("</head><body>")
-	b.WriteString("<h1>devcontainer-nginx diagnostics</h1>")
+	b.WriteString("<h1>devcontainer-nginx homepage</h1>")
 	b.WriteString("<table><thead><tr><th>Container</th><th>Status</th><th>Reason</th><th>Routes</th><th>Metadata</th></tr></thead><tbody>")
 
 	if len(rows) == 0 {
@@ -318,6 +331,7 @@ func renderDiagnosticsHTML(rows []ContainerDiagnostic) string {
 	}
 
 	b.WriteString("</tbody></table>")
+	b.WriteString(fmt.Sprintf("<script>(function(){const current=%d;async function check(){try{const res=await fetch('/homepage/version',{cache:'no-store'});if(!res.ok)return;const next=Number((await res.text()).trim());if(Number.isFinite(next)&&next>current){location.reload();}}catch(_e){}}setInterval(check,2000);})();</script>", revision))
 	b.WriteString("<h2>Useful links</h2><ul>")
 	b.WriteString("<li><a href=\"/nginx.conf\">/nginx.conf</a></li>")
 	b.WriteString("<li><a href=\"/generated.conf\">/generated.conf</a></li>")
@@ -333,7 +347,7 @@ func renderRouteLinks(routes string) string {
 	}
 
 	parts := strings.Split(routes, "; ")
-	links := make([]string, 0, len(parts))
+	links := make([]string, 0, len(parts)*2)
 	for _, part := range parts {
 		host := part
 		if idx := strings.Index(part, " -> "); idx >= 0 {
@@ -343,7 +357,10 @@ func renderRouteLinks(routes string) string {
 			continue
 		}
 		escaped := html.EscapeString(host)
-		links = append(links, fmt.Sprintf(`<a href="https://%s" target="_blank" rel="noopener noreferrer">%s</a>`, escaped, escaped))
+		links = append(links,
+			fmt.Sprintf(`<a href="https://%s" target="_blank" rel="noopener noreferrer"><span class="proto-badge proto-https">HTTPS</span>%s</a>`, escaped, escaped),
+			fmt.Sprintf(`<a href="http://%s" target="_blank" rel="noopener noreferrer"><span class="proto-badge proto-http">HTTP</span>%s</a>`, escaped, escaped),
+		)
 	}
 
 	return strings.Join(links, "<br>")
@@ -388,3 +405,4 @@ func renderContainersHTML(names []string) string {
 	b.WriteString("</body></html>")
 	return b.String()
 }
+

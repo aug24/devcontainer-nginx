@@ -34,9 +34,9 @@ Supported containers:
 - Any dev container with a name and a single port
 - Any dev container with `portsAttributes`
 
-## Step 3: Check the Diagnostics Page
+## Step 3: Open the Homepage
 
-Open: `https://devcontainer-nginx.local.dev-gutools.co.uk/`
+Open: `https://devcontainer-nginx.local.dev-gutools.co.uk/` or `http://devcontainer-nginx.local.dev-gutools.co.uk/`
 
 This shows:
 - All discovered containers with active routes
@@ -45,7 +45,7 @@ This shows:
 
 ## Step 4: Access Your Application
 
-Open `https://myapp.local.dev-gutools.co.uk` in your browser, or click the link on the diagnostics page.
+Open `https://myapp.local.dev-gutools.co.uk` (or `http://myapp.local.dev-gutools.co.uk`) in your browser, or click either link on the homepage.
 
 ---
 

@@ -84,6 +84,7 @@ services:
     build: .
     image: devcontainer-nginx:local
     ports:
+      - "80:80"
       - "443:443"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
@@ -120,11 +121,11 @@ Then test with:
 curl -k https://myapp.local.dev-gutools.co.uk
 ```
 
-## Diagnostics Endpoints
+## Homepage Endpoints
 
-The proxy exposes a dedicated diagnostics hostname:
+The proxy exposes a dedicated homepage hostname:
 
-`https://devcontainer-nginx.<base-domain>`
+`https://devcontainer-nginx.<base-domain>` and `http://devcontainer-nginx.<base-domain>`
 
 Available paths:
 

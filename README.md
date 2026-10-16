@@ -2,6 +2,8 @@
 
 A Docker-based reverse proxy that automatically discovers and routes to development containers without requiring per-project configuration.
 
+![screenshot.png](docs/screenshot.png)
+
 ## TL;DR
 
 ### Start server
@@ -23,6 +25,19 @@ docker run -d --name myapp -p 3000:3000 your-app:latest
 Open https://myapp.local.dev-gutools.co.uk
 
 See the [quick start guide](./docs/QUICK-START.md) for detailed instructions.
+
+### The UI
+
+The proxy also serves a simple homepage at `https://devcontainer-nginx.local.dev-gutools.co.uk/`.
+
+It shows:
+
+- which containers were discovered
+- which routes are active
+- the generated app URLs
+- links to the live nginx config and container list
+
+This is the easiest way to check what the proxy is routing and to open an app quickly from the browser.
 
 ## What This Is
 

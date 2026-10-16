@@ -50,8 +50,8 @@ func main() {
 
 	// Create Nginx config generator
 	configGen := nginx.NewConfigGenerator(*nginxConfigPath, *tlsCert, *tlsKey)
-	diagnosticsState := &DiagnosticsState{}
-	startDiagnosticsServer(ctx, "/etc/nginx/nginx.conf", *nginxConfigPath, configGen, diagnosticsState)
+	homepageState := &DiagnosticsState{}
+	startHomepageServer(ctx, "/etc/nginx/nginx.conf", *nginxConfigPath, configGen, homepageState)
 
 	// Create identifier and resolver
 	identifier := discovery.NewIdentifier()
@@ -79,10 +79,10 @@ func main() {
 
 	// Perform initial reconciliation
 	log.Println("Performing initial reconciliation")
-	reconcileRoutes(ctx, dockerClient, identifier, resolver, configGen, diagnosticsState, proxyID, *baseDomain)
+	reconcileRoutes(ctx, dockerClient, identifier, resolver, configGen, homepageState, proxyID, *baseDomain)
 
 	// Start event watch in background
-	go watchEvents(ctx, dockerClient, identifier, resolver, configGen, diagnosticsState, proxyID, *baseDomain, time.Duration(*debounceMs)*time.Millisecond)
+	go watchEvents(ctx, dockerClient, identifier, resolver, configGen, homepageState, proxyID, *baseDomain, time.Duration(*debounceMs)*time.Millisecond)
 
 	// Wait for shutdown signal
 	sigChan := make(chan os.Signal, 1)
@@ -99,7 +99,7 @@ func reconcileRoutes(
 	identifier *discovery.Identifier,
 	resolver *discovery.NetworkResolver,
 	configGen *nginx.ConfigGenerator,
-	diagnosticsState *DiagnosticsState,
+	homepageState *DiagnosticsState,
 	proxyID string,
 	baseDomain string,
 ) {
@@ -112,13 +112,13 @@ func reconcileRoutes(
 	log.Printf("Discovered %d running containers\n", len(containers))
 
 	var routes []nginx.Route
-	var diagnostics []ContainerDiagnostic
+	var homepageRows []ContainerDiagnostic
 	for _, container := range containers {
 		// Inspect provides richer/normalized metadata than list output.
 		containerInfo, err := dockerClient.InspectContainer(ctx, container.ID)
 		if err != nil {
 			log.Printf("Failed to inspect container %s: %v\n", container.Name, err)
-			diagnostics = append(diagnostics, ContainerDiagnostic{
+			homepageRows = append(homepageRows, ContainerDiagnostic{
 				Name:   container.Name,
 				Status: "skipped",
 				Reason: fmt.Sprintf("inspect failed: %v", err),
@@ -127,7 +127,7 @@ func reconcileRoutes(
 		}
 
 		if isProxyContainer(containerInfo, proxyID) {
-			diagnostics = append(diagnostics, ContainerDiagnostic{
+			homepageRows = append(homepageRows, ContainerDiagnostic{
 				Name:     containerInfo.Name,
 				Status:   "skipped",
 				Reason:   "proxy container",
@@ -137,13 +137,13 @@ func reconcileRoutes(
 		}
 
 		containerRoutes, diag := diagnoseContainer(containerInfo, identifier, resolver, baseDomain)
-		diagnostics = append(diagnostics, diag)
+		homepageRows = append(homepageRows, diag)
 		routes = append(routes, containerRoutes...)
 	}
 
-	diagnosticsState.Set(diagnostics)
+	homepageState.Set(homepageRows)
 
-	// Always expose a stable diagnostics hostname for nginx config inspection.
+	// Always expose a stable homepage hostname for nginx config inspection.
 	routes = append(routes, nginx.Route{
 		Hostname:   "devcontainer-nginx." + baseDomain,
 		TargetHost: "127.0.0.1",
@@ -169,7 +169,7 @@ func reconcileRoutes(
 	log.Printf("Successfully updated routes with %d entries\n", len(routes))
 }
 
-func startDiagnosticsServer(ctx context.Context, nginxBasePath, generatedConfigPath string, configGen *nginx.ConfigGenerator, diagnosticsState *DiagnosticsState) {
+func startHomepageServer(ctx context.Context, nginxBasePath, generatedConfigPath string, configGen *nginx.ConfigGenerator, homepageState *DiagnosticsState) {
 	mux := http.NewServeMux()
 	writeConfig := func(w http.ResponseWriter, path string) {
 		content, err := os.ReadFile(path)
@@ -214,6 +214,11 @@ func startDiagnosticsServer(ctx context.Context, nginxBasePath, generatedConfigP
 		)
 	})
 
+	mux.HandleFunc("/homepage/version", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		_, _ = fmt.Fprintf(w, "%d", homepageState.Revision())
+	})
+
 	mux.HandleFunc("/containers", func(w http.ResponseWriter, r *http.Request) {
 		names := configGen.ListContainers()
 		sort.Strings(names)
@@ -237,8 +242,9 @@ func startDiagnosticsServer(ctx context.Context, nginxBasePath, generatedConfigP
 	})
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		rows := homepageState.Snapshot()
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = w.Write([]byte(renderDiagnosticsHTML(diagnosticsState.Snapshot())))
+		_, _ = w.Write([]byte(renderHomepageHTML(rows, homepageState.Revision())))
 	})
 
 	server := &http.Server{
@@ -252,13 +258,13 @@ func startDiagnosticsServer(ctx context.Context, nginxBasePath, generatedConfigP
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := server.Shutdown(shutdownCtx); err != nil {
-			log.Printf("Diagnostics server shutdown error: %v", err)
+			log.Printf("Homepage server shutdown error: %v", err)
 		}
 	}()
 
 	go func() {
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Printf("Diagnostics server error: %v", err)
+			log.Printf("Homepage server error: %v", err)
 		}
 	}()
 }
@@ -269,7 +275,7 @@ func watchEvents(
 	identifier *discovery.Identifier,
 	resolver *discovery.NetworkResolver,
 	configGen *nginx.ConfigGenerator,
-	diagnosticsState *DiagnosticsState,
+	homepageState *DiagnosticsState,
 	proxyID string,
 	baseDomain string,
 	debounce time.Duration,
@@ -293,7 +299,7 @@ func watchEvents(
 		case <-ticker.C:
 			if needsReconcile {
 				needsReconcile = false
-				reconcileRoutes(ctx, dockerClient, identifier, resolver, configGen, diagnosticsState, proxyID, baseDomain)
+				reconcileRoutes(ctx, dockerClient, identifier, resolver, configGen, homepageState, proxyID, baseDomain)
 			}
 		}
 	}

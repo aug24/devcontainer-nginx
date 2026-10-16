@@ -50,6 +50,21 @@ fi
 cat > "$GENERATED_CONFIG" <<EOF
 # Bootstrap config generated at container start.
 server {
+    listen 80 default_server;
+    server_name _;
+
+    location = /health {
+        add_header Content-Type text/plain;
+        return 200 'ok';
+    }
+
+    location / {
+        add_header Content-Type text/plain;
+        return 503 'No route configured';
+    }
+}
+
+server {
     listen 443 ssl default_server;
     server_name _;
 
