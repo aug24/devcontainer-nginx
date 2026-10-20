@@ -146,10 +146,49 @@ func diagnoseContainer(
 	return routes, diag
 }
 
+func devcontainerModelLabelKeys(labels map[string]string) []string {
+	keys := []string{
+		"devcontainer.model",
+		"devcontainer.initial.model",
+	}
+	seen := make(map[string]bool, len(keys))
+	for _, key := range keys {
+		seen[key] = true
+	}
+	for key := range labels {
+		if strings.HasSuffix(key, ".devcontainer.model") || strings.HasSuffix(key, ".devcontainer.initial.model") {
+			if !seen[key] {
+				keys = append(keys, key)
+				seen[key] = true
+			}
+		}
+	}
+	return keys
+}
+
+func devcontainerPresentableName(labels map[string]string) string {
+	for _, key := range []string{
+		"devcontainer.presentable.name",
+	} {
+		if value := labels[key]; value != "" {
+			return value
+		}
+	}
+	for key, value := range labels {
+		if value == "" {
+			continue
+		}
+		if strings.HasSuffix(key, ".devcontainer.presentable.name") || key == "devcontainer.presentable.name" {
+			return value
+		}
+	}
+	return ""
+}
+
 func summarizeContainerMetadata(containerInfo *discovery.ContainerInfo) string {
 	var parts []string
 
-	if name := containerInfo.Labels["com.intellij.devcontainer.presentable.name"]; name != "" {
+	if name := devcontainerPresentableName(containerInfo.Labels); name != "" {
 		parts = append(parts, "presentable="+name)
 	}
 	if name := containerInfo.Labels["devcontainer.hostname"]; name != "" {
@@ -190,10 +229,7 @@ func summarizeContainerMetadata(containerInfo *discovery.ContainerInfo) string {
 }
 
 func extractDiagnosticsPortMetadata(labels map[string]string) ([]int, map[int]string) {
-	labelKeys := []string{
-		"com.intellij.devcontainer.model",
-		"com.intellij.devcontainer.initial.model",
-	}
+	labelKeys := devcontainerModelLabelKeys(labels)
 
 	seenPorts := make(map[int]bool)
 	portLabels := make(map[int]string)

@@ -332,11 +332,49 @@ func (i *Identifier) ExtractRouteTargets(
 	}}
 }
 
-func extractForwardedPorts(labels map[string]string) []int {
-	labelKeys := []string{
-		"com.intellij.devcontainer.model",
-		"com.intellij.devcontainer.initial.model",
+func devcontainerModelLabelKeys(labels map[string]string) []string {
+	keys := []string{
+		"devcontainer.model",
+		"devcontainer.initial.model",
 	}
+	seen := make(map[string]bool, len(keys))
+	for _, key := range keys {
+		seen[key] = true
+	}
+
+	for key := range labels {
+		if strings.HasSuffix(key, ".devcontainer.model") || strings.HasSuffix(key, ".devcontainer.initial.model") {
+			if !seen[key] {
+				keys = append(keys, key)
+				seen[key] = true
+			}
+		}
+	}
+
+	return keys
+}
+
+func devcontainerPresentableName(labels map[string]string) string {
+	for _, key := range []string{
+		"devcontainer.presentable.name",
+	} {
+		if name := labels[key]; name != "" {
+			return name
+		}
+	}
+	for key, value := range labels {
+		if value == "" {
+			continue
+		}
+		if key == "devcontainer.presentable.name" || strings.HasSuffix(key, ".devcontainer.presentable.name") {
+			return value
+		}
+	}
+	return ""
+}
+
+func extractForwardedPorts(labels map[string]string) []int {
+	labelKeys := devcontainerModelLabelKeys(labels)
 
 	seen := make(map[int]bool)
 	ports := make([]int, 0)
@@ -392,10 +430,7 @@ type forwardedPortLabel struct {
 }
 
 func extractForwardedPortLabels(labels map[string]string) []forwardedPortLabel {
-	labelKeys := []string{
-		"com.intellij.devcontainer.model",
-		"com.intellij.devcontainer.initial.model",
-	}
+	labelKeys := devcontainerModelLabelKeys(labels)
 
 	seenPorts := make(map[int]bool)
 	var result []forwardedPortLabel
