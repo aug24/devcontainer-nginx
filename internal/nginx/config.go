@@ -36,6 +36,48 @@ type Route struct {
 	Hostname      string
 	TargetHost    string
 	TargetPort    int
+	Protocol      string
+}
+
+// ApplyRoutes stores the route set, renders config, and writes it atomically under one lock.
+func (cg *ConfigGenerator) ApplyRoutes(routes []Route) error {
+	cg.mu.Lock()
+	defer cg.mu.Unlock()
+
+	cg.routes = make([]Route, len(routes))
+	copy(cg.routes, routes)
+
+	content := cg.renderConfig(routes)
+	return cg.writeConfig(content)
+}
+
+// writeConfig writes configuration to file atomically.
+func (cg *ConfigGenerator) writeConfig(content string) error {
+	configDir := filepath.Dir(cg.configPath)
+	configFilename := filepath.Base(cg.configPath)
+
+	// Create temp file in same directory for atomic rename
+	tmpFile, err := ioutil.TempFile(configDir, fmt.Sprintf(".%s.", configFilename))
+	if err != nil {
+		return fmt.Errorf("failed to create temp file: %w", err)
+	}
+	defer tmpFile.Close()
+	tmpPath := tmpFile.Name()
+
+	// Write content to temp file
+	if _, err := tmpFile.WriteString(content); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("failed to write config: %w", err)
+	}
+
+	// Atomic rename
+	if err := os.Rename(tmpPath, cg.configPath); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("failed to rename config file: %w", err)
+	}
+
+	log.Printf("Wrote Nginx configuration to %s\n", cg.configPath)
+	return nil
 }
 
 // GenerateConfig generates Nginx configuration from routes.
@@ -46,6 +88,16 @@ func (cg *ConfigGenerator) GenerateConfig(routes []Route) string {
 	cg.mu.Unlock()
 
 	return cg.renderConfig(routes)
+}
+
+// CurrentRoutes returns the most recently generated route set.
+func (cg *ConfigGenerator) CurrentRoutes() []Route {
+	cg.mu.RLock()
+	defer cg.mu.RUnlock()
+
+	out := make([]Route, len(cg.routes))
+	copy(out, cg.routes)
+	return out
 }
 
 // renderConfig renders the full nginx config from a slice of routes.
@@ -175,10 +227,22 @@ func (cg *ConfigGenerator) generateDefaultServerBlock() []string {
 // generateServerBlock generates HTTP and HTTPS server blocks for a single route.
 func (cg *ConfigGenerator) generateServerBlock(route Route) []string {
 	upstreamName := cg.sanitizeUpstreamName(route.Hostname)
+	protocol := strings.ToLower(strings.TrimSpace(route.Protocol))
+	if protocol == "" {
+		protocol = "http"
+	}
 
 	proxyLocation := []string{
 		"    location / {",
-		fmt.Sprintf("        proxy_pass http://%s;", upstreamName),
+		fmt.Sprintf("        proxy_pass %s://%s;", protocol, upstreamName),
+	}
+	if protocol == "https" {
+		proxyLocation = append(proxyLocation,
+			"        proxy_ssl_server_name on;",
+			"        proxy_ssl_verify off;",
+		)
+	}
+	proxyLocation = append(proxyLocation,
 		"",
 		"        # Proxy headers",
 		"        proxy_http_version 1.1;",
@@ -196,7 +260,7 @@ func (cg *ConfigGenerator) generateServerBlock(route Route) []string {
 		"        proxy_send_timeout 60s;",
 		"        proxy_read_timeout 60s;",
 		"    }",
-	}
+	)
 
 	lines := []string{
 		fmt.Sprintf("# Route: %s -> %s:%d", route.Hostname, route.TargetHost, route.TargetPort),
@@ -321,4 +385,12 @@ func (cg *ConfigGenerator) ReadCurrentConfig() (string, error) {
 		return "", fmt.Errorf("failed to read configuration: %w", err)
 	}
 	return string(content), nil
+}
+
+func (cg *ConfigGenerator) CertPath() string {
+	return cg.certPath
+}
+
+func (cg *ConfigGenerator) KeyPath() string {
+	return cg.keyPath
 }

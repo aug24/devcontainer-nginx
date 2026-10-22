@@ -2,13 +2,16 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -18,6 +21,22 @@ import (
 )
 
 func main() {
+	logDir := "/var/log/devcontainer-nginx"
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to create log directory %s: %v\n", logDir, err)
+		os.Exit(1)
+	}
+
+	logFile, err := os.OpenFile(filepath.Join(logDir, "devcontainer-nginx.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to open log file: %v\n", err)
+		os.Exit(1)
+	}
+	defer logFile.Close()
+
+	log.SetOutput(logFile)
+	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
+
 	baseDomain := flag.String("base-domain", "local.dev-gutools.co.uk", "Base domain for generated hostnames")
 	dockerSocket := flag.String("docker-socket", "/var/run/docker.sock", "Path to Docker socket")
 	nginxConfigPath := flag.String("nginx-config", "/etc/nginx/conf.d/generated.conf", "Path where to write generated Nginx config")
@@ -41,19 +60,17 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Create Docker client
 	dockerClient, err := discovery.NewDockerClient(ctx)
 	if err != nil {
 		log.Fatalf("Failed to create Docker client: %v", err)
 	}
 	defer dockerClient.Close()
 
-	// Create Nginx config generator
 	configGen := nginx.NewConfigGenerator(*nginxConfigPath, *tlsCert, *tlsKey)
 	homepageState := &DiagnosticsState{}
-	startHomepageServer(ctx, "/etc/nginx/nginx.conf", *nginxConfigPath, configGen, homepageState)
+	tunnelManager := NewTunnelManager()
+	startHomepageServer(ctx, "/etc/nginx/nginx.conf", *nginxConfigPath, configGen, homepageState, tunnelManager, baseDomain)
 
-	// Create identifier and resolver
 	identifier := discovery.NewIdentifier()
 	proxyID := os.Getenv("PROXY_CONTAINER_ID")
 	if proxyID == "" {
@@ -77,14 +94,11 @@ func main() {
 		}
 	}
 
-	// Perform initial reconciliation
 	log.Println("Performing initial reconciliation")
-	reconcileRoutes(ctx, dockerClient, identifier, resolver, configGen, homepageState, proxyID, *baseDomain)
+	reconcileRoutes(ctx, dockerClient, identifier, resolver, configGen, homepageState, proxyID, *baseDomain, tunnelManager)
 
-	// Start event watch in background
-	go watchEvents(ctx, dockerClient, identifier, resolver, configGen, homepageState, proxyID, *baseDomain, time.Duration(*debounceMs)*time.Millisecond)
+	go watchEvents(ctx, dockerClient, identifier, resolver, configGen, homepageState, proxyID, *baseDomain, tunnelManager, time.Duration(*debounceMs)*time.Millisecond)
 
-	// Wait for shutdown signal
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGTERM, syscall.SIGINT)
 
@@ -102,6 +116,7 @@ func reconcileRoutes(
 	homepageState *DiagnosticsState,
 	proxyID string,
 	baseDomain string,
+	tunnelManager *TunnelManager,
 ) {
 	containers, err := dockerClient.ListContainers(ctx)
 	if err != nil {
@@ -141,6 +156,10 @@ func reconcileRoutes(
 		routes = append(routes, containerRoutes...)
 	}
 
+	if tunnelManager != nil {
+		routes = append(routes, tunnelManager.NginxRoutes(baseDomain)...)
+	}
+
 	homepageState.Set(homepageRows)
 
 	// Always expose a stable homepage hostname for nginx config inspection.
@@ -151,8 +170,7 @@ func reconcileRoutes(
 	})
 
 	// Generate and update config
-	config := configGen.GenerateConfig(routes)
-	if err := configGen.WriteConfig(config); err != nil {
+	if err := configGen.ApplyRoutes(routes); err != nil {
 		log.Printf("ERROR: Failed to write config: %v\n", err)
 		return
 	}
@@ -169,8 +187,9 @@ func reconcileRoutes(
 	log.Printf("Successfully updated routes with %d entries\n", len(routes))
 }
 
-func startHomepageServer(ctx context.Context, nginxBasePath, generatedConfigPath string, configGen *nginx.ConfigGenerator, homepageState *DiagnosticsState) {
+func startHomepageServer(ctx context.Context, nginxBasePath, generatedConfigPath string, configGen *nginx.ConfigGenerator, homepageState *DiagnosticsState, tunnelManager *TunnelManager, baseDomain *string) {
 	mux := http.NewServeMux()
+
 	writeConfig := func(w http.ResponseWriter, path string) {
 		content, err := os.ReadFile(path)
 		if err != nil {
@@ -214,9 +233,23 @@ func startHomepageServer(ctx context.Context, nginxBasePath, generatedConfigPath
 		)
 	})
 
+	mux.HandleFunc("/logs", tunnelManager.Logs)
+
 	mux.HandleFunc("/homepage/version", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		_, _ = fmt.Fprintf(w, "%d", homepageState.Revision())
+	})
+
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
+		rows := homepageState.Snapshot()
+		rows = append(rows, tunnelDiagnostics(tunnelManager, *baseDomain)...)
+
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(renderHomepageHTML(rows, homepageState.Revision())))
 	})
 
 	mux.HandleFunc("/containers", func(w http.ResponseWriter, r *http.Request) {
@@ -241,10 +274,141 @@ func startHomepageServer(ctx context.Context, nginxBasePath, generatedConfigPath
 		_, _ = w.Write([]byte(config))
 	})
 
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		rows := homepageState.Snapshot()
+	mux.HandleFunc("/aws-config", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = w.Write([]byte(renderAWSConfigPage(tunnelManager.AWSConfigSnapshot())))
+			return
+		}
+		if r.Method == http.MethodPost {
+			defer r.Body.Close()
+			var cfg AWSConfig
+			if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
+				http.Error(w, "invalid json: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+			if err := tunnelManager.SetAWSConfig(cfg); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(tunnelManager.AWSConfigSnapshot())
+			return
+		}
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	})
+
+	mux.HandleFunc("/api/aws-config", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(tunnelManager.AWSConfigSnapshot())
+		case http.MethodPost:
+			defer r.Body.Close()
+			var cfg AWSConfig
+			if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
+				http.Error(w, "invalid json: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+			if err := tunnelManager.SetAWSConfig(cfg); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(tunnelManager.AWSConfigSnapshot())
+
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+
+	mux.HandleFunc("/tunnels", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = w.Write([]byte(renderHomepageHTML(rows, homepageState.Revision())))
+		_, _ = w.Write([]byte(renderTunnelPage(tunnelManager.AWSConfigSnapshot(), tunnelManager.Snapshot())))
+	})
+
+	mux.HandleFunc("/api/tunnels", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(tunnelManager.Snapshot())
+		case http.MethodPost:
+			defer r.Body.Close()
+			var request TunnelRequest
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				http.Error(w, "invalid json: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+			if strings.TrimSpace(request.Profile) == "" {
+				request.Profile = tunnelManager.AWSConfigSnapshot().Profile
+			}
+			if strings.TrimSpace(request.Region) == "" {
+				request.Region = tunnelManager.AWSConfigSnapshot().Region
+			}
+			entry, err := tunnelManager.Create(request)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			if err := tunnelManager.Start(entry.ID); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			tunnelManager.EnsureConfig(*baseDomain, configGen)
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(entry)
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+
+	mux.HandleFunc("/api/tunnels/stop/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		id := strings.TrimPrefix(r.URL.Path, "/api/tunnels/stop/")
+		if id == "" {
+			http.Error(w, "missing tunnel id", http.StatusBadRequest)
+			return
+		}
+		if err := tunnelManager.Stop(id); err != nil {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		tunnelManager.EnsureConfig(*baseDomain, configGen)
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	mux.HandleFunc("/api/tunnels/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		id := strings.TrimPrefix(r.URL.Path, "/api/tunnels/")
+		if id == "" {
+			http.Error(w, "missing tunnel id", http.StatusBadRequest)
+			return
+		}
+		if !tunnelManager.Remove(id) {
+			http.Error(w, "tunnel not found", http.StatusNotFound)
+			return
+		}
+		tunnelManager.EnsureConfig(*baseDomain, configGen)
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	mux.HandleFunc("/shell-command-generator", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(renderCommandGeneratorPage()))
 	})
 
 	server := &http.Server{
@@ -278,6 +442,7 @@ func watchEvents(
 	homepageState *DiagnosticsState,
 	proxyID string,
 	baseDomain string,
+	tunnelManager *TunnelManager,
 	debounce time.Duration,
 ) {
 	messages, errors := dockerClient.WatchEvents(ctx)
@@ -299,7 +464,7 @@ func watchEvents(
 		case <-ticker.C:
 			if needsReconcile {
 				needsReconcile = false
-				reconcileRoutes(ctx, dockerClient, identifier, resolver, configGen, homepageState, proxyID, baseDomain)
+				reconcileRoutes(ctx, dockerClient, identifier, resolver, configGen, homepageState, proxyID, baseDomain, tunnelManager)
 			}
 		}
 	}
@@ -325,4 +490,35 @@ func isProxyContainer(containerInfo *discovery.ContainerInfo, proxyID string) bo
 	}
 
 	return false
+}
+
+func (tunnelManager *TunnelManager) Logs(w http.ResponseWriter, r *http.Request) {
+	logPath := filepath.Join("/var/log/devcontainer-nginx", "devcontainer-nginx.log")
+	count := 40
+	if q := r.URL.Query().Get("n"); q != "" {
+		if parsed, err := strconv.Atoi(q); err == nil && parsed > 0 {
+			count = parsed
+		}
+	}
+	if count > 200 {
+		count = 200
+	}
+
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("failed to read %s: %v", logPath, err), http.StatusInternalServerError)
+		return
+	}
+
+	lines := strings.Split(string(data), "\n")
+	if len(lines) > count {
+		lines = lines[len(lines)-count:]
+	}
+	out := strings.Join(lines, "\n")
+	if out != "" {
+		out += "\n"
+	}
+
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	_, _ = w.Write([]byte(out))
 }

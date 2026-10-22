@@ -332,10 +332,10 @@ func parseDiagnosticsPortsAttributes(doc map[string]any) map[int]string {
 
 func renderHomepageHTML(rows []ContainerDiagnostic, revision uint64) string {
 	var b strings.Builder
-	b.WriteString("<!doctype html><html><head><meta charset=\"utf-8\"><title>devcontainer-nginx homepage</title>")
+	b.WriteString("<!doctype html><html><head><meta charset=\"utf-8\"><title>Devcontainer Nginx: Home</title>")
 	b.WriteString("<style>body{font-family:system-ui,sans-serif;margin:24px}table{border-collapse:collapse;width:100%}th,td{border:1px solid #ccc;padding:8px;vertical-align:top;text-align:left}th{background:#f5f5f5}.ok{color:#0a7}.skip{color:#b50}.partial{color:#a60}.proto-badge{display:inline-block;font-size:0.7em;font-weight:700;padding:1px 5px;border-radius:3px;margin-right:4px;vertical-align:middle;letter-spacing:.04em}.proto-https{background:#1a6fa8;color:#fff}.proto-http{background:#888;color:#fff}</style>")
 	b.WriteString("</head><body>")
-	b.WriteString("<h1>devcontainer-nginx homepage</h1>")
+	b.WriteString(renderPageHeader("Home"))
 	b.WriteString("<table><thead><tr><th>Container</th><th>Status</th><th>Reason</th><th>Routes</th><th>Metadata</th></tr></thead><tbody>")
 
 	if len(rows) == 0 {
@@ -373,8 +373,15 @@ func renderHomepageHTML(rows []ContainerDiagnostic, revision uint64) string {
 	b.WriteString("<li><a href=\"/generated.conf\">/generated.conf</a></li>")
 	b.WriteString("<li><a href=\"/nginx/config\">/nginx/config</a></li>")
 	b.WriteString("<li><a href=\"/containers\">/containers</a></li>")
+	b.WriteString("<li><a href=\"/aws-config\">/aws-config</a></li>")
+	b.WriteString("<li><a href=\"/tunnels\">/tunnels</a></li>")
+	b.WriteString("<li><a href=\"/shell-command-generator\">/shell-command-generator</a></li>")
 	b.WriteString("</ul></body></html>")
 	return b.String()
+}
+
+func renderPageHeader(title string) string {
+	return fmt.Sprintf("<h1><a href=\"/\" style=\"color:inherit;text-decoration:none;\">%s</a>: %s</h1>", html.EscapeString("Devcontainer Nginx"), html.EscapeString(title))
 }
 
 func renderRouteLinks(routes string) string {
@@ -421,10 +428,10 @@ func renderMetadataLines(metadata string) string {
 
 func renderContainersHTML(names []string) string {
 	var b strings.Builder
-	b.WriteString("<!doctype html><html><head><meta charset=\"utf-8\"><title>devcontainer-nginx containers</title>")
+	b.WriteString("<!doctype html><html><head><meta charset=\"utf-8\"><title>Devcontainer Nginx: Containers</title>")
 	b.WriteString("<style>body{font-family:system-ui,sans-serif;margin:24px}ul{line-height:1.8}</style>")
 	b.WriteString("</head><body>")
-	b.WriteString("<h1>Containers</h1>")
+	b.WriteString(renderPageHeader("Containers"))
 	if len(names) == 0 {
 		b.WriteString("<p>No containers with active routes.</p>")
 	} else {
@@ -441,4 +448,3 @@ func renderContainersHTML(names []string) string {
 	b.WriteString("</body></html>")
 	return b.String()
 }
-

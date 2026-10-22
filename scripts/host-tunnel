@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+export HOME="${HOME:-/root}"
+if [[ -d /root/.aws ]]; then
+  export AWS_CONFIG_FILE="/root/.aws/config"
+  export AWS_SHARED_CREDENTIALS_FILE="/root/.aws/credentials"
+fi
+
+usage() {
+  echo "Usage:" >&2
+  echo "  host-tunnel --profile <profile> --region <region> --stack <stack> --stage <stage> --app <app> --alb <alb> --local-port <port> --name <name>" >&2
+  exit 1
+}
+profile="default"
+region="us-east-1"
+stack=""
+stage=""
+app=""
+alb=""
+local_port=""
+name=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --profile)
+      profile="${2:-}"
+      shift 2
+      ;;
+    --region)
+      region="${2:-}"
+      shift 2
+      ;;
+    --stack)
+      stack="${2:-}"
+      shift 2
+      ;;
+    --stage)
+      stage="${2:-}"
+      shift 2
+      ;;
+    --app)
+      app="${2:-}"
+      shift 2
+      ;;
+    --alb)
+      alb="${2:-}"
+      shift 2
+      ;;
+    --local-port)
+      local_port="${2:-}"
+      shift 2
+      ;;
+    --name)
+      name="${2:-}"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      usage
+      ;;
+  esac
+done
+if [[ -z "$stack" || -z "$stage" || -z "$app" || -z "$alb" || -z "$local_port" || -z "$name" ]]; then
+  usage
+fi
+if ! command -v aws >/dev/null 2>&1; then
+  echo "aws CLI is required but was not found in PATH" >&2
+  exit 1
+fi
+instance_id=$(aws ec2 describe-instances \
+  --profile "$profile" \
+  --region "$region" \
+  --filters \
+    "Name=tag:App,Values=$app" \
+    "Name=tag:Stack,Values=$stack" \
+    "Name=tag:Stage,Values=$stage" \
+    "Name=instance-state-name,Values=running" \
+  --query "Reservations[].Instances[] | sort_by(@, &LaunchTime)[0].InstanceId" \
+  --output text)
+if [[ -z "$instance_id" || "$instance_id" == "None" ]]; then
+  echo "No running EC2 instance found for app=$app stack=$stack stage=$stage" >&2
+  exit 1
+fi
+echo "Starting tunnel for $name via instance $instance_id -> $alb:443 on local port $local_port" >&2
+params_json="{\"host\":[\"$alb\"],\"portNumber\":[\"443\"],\"localPortNumber\":[\"$local_port\"]}"
+exec aws ssm start-session \
+  --profile "$profile" \
+  --region "$region" \
+  --document-name AWS-StartPortForwardingSessionToRemoteHost \
+  --parameters "$params_json" \
+  --target "$instance_id"

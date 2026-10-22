@@ -23,7 +23,16 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # Install required tools
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends nginx openssl curl ca-certificates mkcert \
+    && apt-get install -y --no-install-recommends nginx openssl curl ca-certificates mkcert awscli \
+    && ARCH="$(uname -m)" \
+    && case "$ARCH" in \
+        x86_64) PLUGIN_ARCH="ubuntu_64bit" ;; \
+        aarch64|arm64) PLUGIN_ARCH="ubuntu_arm64" ;; \
+        *) echo "Unsupported architecture for Session Manager plugin: $ARCH" >&2; exit 1 ;; \
+    esac \
+    && curl -fsSL "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/${PLUGIN_ARCH}/session-manager-plugin.deb" -o /tmp/session-manager-plugin.deb \
+    && dpkg -i /tmp/session-manager-plugin.deb \
+    && rm -f /tmp/session-manager-plugin.deb \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy built binary
@@ -32,12 +41,15 @@ COPY --from=builder /build/devcontainer-nginx /usr/local/bin/
 # Copy nginx config
 COPY nginx/nginx.conf /etc/nginx/nginx.conf
 COPY entrypoint.sh /entrypoint.sh
+COPY scripts/host-tunnel /usr/local/bin/host-tunnel
+COPY scripts/shell /usr/local/bin/shell
 
 # Create required directories
 RUN mkdir -p /etc/nginx/conf.d /etc/nginx/certs /var/log/nginx \
-    /var/cache/nginx \
-    && chown -R www-data:www-data /var/log/nginx /var/cache/nginx \
-    && chmod +x /entrypoint.sh
+    /var/cache/nginx /var/log/devcontainer-nginx \
+    && chown -R www-data:www-data /var/log/nginx /var/cache/nginx /var/log/devcontainer-nginx \
+    && chmod 755 /var/log/devcontainer-nginx \
+    && chmod +x /entrypoint.sh /usr/local/bin/host-tunnel /usr/local/bin/shell
 
 # Create baseline generated config
 RUN echo "# Generated configuration (empty on startup)" > /etc/nginx/conf.d/generated.conf
