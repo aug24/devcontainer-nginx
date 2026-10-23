@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"html"
 	"log"
@@ -150,13 +149,14 @@ func devcontainerModelLabelKeys(labels map[string]string) []string {
 	keys := []string{
 		"devcontainer.model",
 		"devcontainer.initial.model",
+		"devcontainer.metadata",
 	}
 	seen := make(map[string]bool, len(keys))
 	for _, key := range keys {
 		seen[key] = true
 	}
 	for key := range labels {
-		if strings.HasSuffix(key, ".devcontainer.model") || strings.HasSuffix(key, ".devcontainer.initial.model") {
+		if strings.HasSuffix(key, ".devcontainer.model") || strings.HasSuffix(key, ".devcontainer.initial.model") || strings.HasSuffix(key, ".devcontainer.metadata") {
 			if !seen[key] {
 				keys = append(keys, key)
 				seen[key] = true
@@ -230,6 +230,7 @@ func summarizeContainerMetadata(containerInfo *discovery.ContainerInfo) string {
 
 func extractDiagnosticsPortMetadata(labels map[string]string) ([]int, map[int]string) {
 	labelKeys := devcontainerModelLabelKeys(labels)
+	log.Println("Labels:", labelKeys)
 
 	seenPorts := make(map[int]bool)
 	portLabels := make(map[int]string)
@@ -241,20 +242,27 @@ func extractDiagnosticsPortMetadata(labels map[string]string) ([]int, map[int]st
 			continue
 		}
 
-		var doc map[string]any
-		if err := json.Unmarshal([]byte(raw), &doc); err != nil {
+		log.Println("Found Label:", key)
+		log.Println("Raw Value:", raw)
+
+		documents, err := discovery.ParseDevcontainerMetadata(raw)
+		if err != nil {
 			continue
 		}
 
-		for _, port := range parseDiagnosticsForwardedPorts(doc) {
-			if !seenPorts[port] {
-				seenPorts[port] = true
-				forwardedPorts = append(forwardedPorts, port)
+		for _, doc := range documents {
+			for _, port := range parseDiagnosticsForwardedPorts(doc) {
+				log.Println("Found Forwarded Port:", port)
+				if !seenPorts[port] {
+					seenPorts[port] = true
+					forwardedPorts = append(forwardedPorts, port)
+				}
 			}
-		}
 
-		for port, label := range parseDiagnosticsPortsAttributes(doc) {
-			portLabels[port] = label
+			for port, label := range parseDiagnosticsPortsAttributes(doc) {
+				log.Println("Found Port Attribute:", port, "Label:", label)
+				portLabels[port] = label
+			}
 		}
 	}
 

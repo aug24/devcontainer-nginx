@@ -336,6 +336,7 @@ func devcontainerModelLabelKeys(labels map[string]string) []string {
 	keys := []string{
 		"devcontainer.model",
 		"devcontainer.initial.model",
+		"devcontainer.metadata",
 	}
 	seen := make(map[string]bool, len(keys))
 	for _, key := range keys {
@@ -343,7 +344,7 @@ func devcontainerModelLabelKeys(labels map[string]string) []string {
 	}
 
 	for key := range labels {
-		if strings.HasSuffix(key, ".devcontainer.model") || strings.HasSuffix(key, ".devcontainer.initial.model") {
+		if strings.HasSuffix(key, ".devcontainer.model") || strings.HasSuffix(key, ".devcontainer.initial.model") || strings.HasSuffix(key, ".devcontainer.metadata") {
 			if !seen[key] {
 				keys = append(keys, key)
 				seen[key] = true
@@ -373,6 +374,31 @@ func devcontainerPresentableName(labels map[string]string) string {
 	return ""
 }
 
+// Metadata labels can be object-shaped legacy values or spec-compliant arrays of
+// JSON snippets, so accept both shapes when reading them.
+func ParseDevcontainerMetadata(raw string) ([]map[string]any, error) {
+	var value any
+	if err := json.Unmarshal([]byte(raw), &value); err != nil {
+		return nil, err
+	}
+
+	switch metadata := value.(type) {
+	case map[string]any:
+		return []map[string]any{metadata}, nil
+	case []any:
+		documents := make([]map[string]any, 0, len(metadata))
+		for _, item := range metadata {
+			document, ok := item.(map[string]any)
+			if ok {
+				documents = append(documents, document)
+			}
+		}
+		return documents, nil
+	default:
+		return nil, fmt.Errorf("devcontainer metadata must be a JSON object or array")
+	}
+}
+
 func extractForwardedPorts(labels map[string]string) []int {
 	labelKeys := devcontainerModelLabelKeys(labels)
 
@@ -385,38 +411,40 @@ func extractForwardedPorts(labels map[string]string) []int {
 			continue
 		}
 
-		var doc map[string]any
-		if err := json.Unmarshal([]byte(raw), &doc); err != nil {
+		documents, err := ParseDevcontainerMetadata(raw)
+		if err != nil {
 			continue
 		}
 
-		forwarded, ok := doc["forwardPorts"]
-		if !ok {
-			continue
-		}
-
-		list, ok := forwarded.([]any)
-		if !ok {
-			continue
-		}
-
-		for _, item := range list {
-			var port int
-			switch v := item.(type) {
-			case float64:
-				port = int(v)
-			case string:
-				p, err := strconv.Atoi(v)
-				if err != nil {
-					continue
-				}
-				port = p
-			default:
+		for _, doc := range documents {
+			forwarded, ok := doc["forwardPorts"]
+			if !ok {
 				continue
 			}
-			if port > 0 && port <= 65535 && !seen[port] {
-				seen[port] = true
-				ports = append(ports, port)
+
+			list, ok := forwarded.([]any)
+			if !ok {
+				continue
+			}
+
+			for _, item := range list {
+				var port int
+				switch v := item.(type) {
+				case float64:
+					port = int(v)
+				case string:
+					p, err := strconv.Atoi(v)
+					if err != nil {
+						continue
+					}
+					port = p
+				default:
+					continue
+				}
+				if port > 0 && port <= 65535 && !seen[port] {
+					seen[port] = true
+					ports = append(ports, port)
+				}
 			}
 		}
 	}
@@ -441,31 +469,33 @@ func extractForwardedPortLabels(labels map[string]string) []forwardedPortLabel {
 			continue
 		}
 
-		var doc map[string]any
-		if err := json.Unmarshal([]byte(raw), &doc); err != nil {
+		documents, err := ParseDevcontainerMetadata(raw)
+		if err != nil {
 			continue
 		}
 
-		forwarded := parseForwardedPortsFromDoc(doc)
-		if len(forwarded) == 0 {
-			continue
-		}
-
-		attrLabels := parsePortsAttributesFromDoc(doc)
-		if len(attrLabels) == 0 {
-			continue
-		}
-
-		for _, port := range forwarded {
-			label, ok := attrLabels[port]
-			if !ok || strings.TrimSpace(label) == "" || seenPorts[port] {
+		for _, doc := range documents {
+			forwarded := parseForwardedPortsFromDoc(doc)
+			if len(forwarded) == 0 {
 				continue
 			}
-			seenPorts[port] = true
-			result = append(result, forwardedPortLabel{
-				Port:  port,
-				Label: label,
-			})
+
+			attrLabels := parsePortsAttributesFromDoc(doc)
+			if len(attrLabels) == 0 {
+				continue
+			}
+
+			for _, port := range forwarded {
+				label, ok := attrLabels[port]
+				if !ok || strings.TrimSpace(label) == "" || seenPorts[port] {
+					continue
+				}
+				seenPorts[port] = true
+				result = append(result, forwardedPortLabel{
+					Port:  port,
+					Label: label,
+				})
+			}
 		}
 	}
 
