@@ -1,137 +1,86 @@
 # Security Considerations
 
-## Docker Socket Access
+## Docker socket access
 
-The Docker socket is highly privileged. The proxy handles this securely:
+The proxy mounts the Docker socket read-only:
 
-- **Read-only mounting**: `/var/run/docker.sock:/var/run/docker.sock:ro`
-- **Limited operations**: Only inspects containers; does not create, start, stop, or exec into containers
-- **No container modification**: The proxy discovers existing state without modifying it
-
-### Docker Permissions Required
-
-The proxy uses the Docker API for:
-- Listing containers
-- Inspecting container metadata (labels, ports, networks)
-- Monitoring events (container start, stop, network changes)
-
-These operations require read-only access to:
-- Container metadata
-- Event stream
-- Network configuration
-
-### Advanced: Docker Socket Proxy
-
-For additional isolation, consider using a Docker socket proxy that restricts the proxy to only necessary operations. This adds a security layer but is not required for basic functionality.
-
-## TLS/Certificate Security
-
-- **Private keys never logged**: The proxy does not log certificate contents
-- **Read-only certificate mounts**: Certificates mounted as read-only
-- **mkcert support**: Use trusted local CAs for development
-
-### Certificate Management
-
-```bash
-# Generate certificates using mkcert
-mkcert -install
-mkcert "*.local.dev-gutools.co.uk"
-
-# Mount in docker-compose.yml
-volumes:
-  - "./certs:/etc/nginx/certs:ro"
+```yaml
+- /var/run/docker.sock:/var/run/docker.sock:ro
 ```
 
-**Important**: Keep private keys secure and never commit them to version control.
+The application only inspects Docker state; it does not create or mutate containers. This keeps the discovery flow narrow and avoids unnecessary privileged operations.
 
-## Nginx Security
+## TLS and certificate handling
 
-- **TLS termination**: All communication between developer and proxy is encrypted
-- **Application containers**: Communicate with proxy over Docker networks or localhost (no direct TLS required)
-- **No secret exposure**: Credentials are not logged or exposed
+The proxy terminates TLS for the developer-facing hostnames and exposes a certificate path controlled by environment variables.
 
-## Container Identification
+- `TLS_CERT` — public certificate
+- `TLS_KEY` — private key
+- `LOCAL_CA_CERT` / `LOCAL_CA_KEY` — mkcert CA files used for local certificate generation
 
-The proxy uses conservative heuristics for container identification:
+If certs are missing, the entrypoint can generate a wildcard certificate for the configured base domain using a local mkcert root. If no local CA is available, it falls back to a self-signed certificate.
 
-1. Prefers explicit metadata labels
-2. Falls back to reasonable naming conventions
-3. Excludes known system containers
+### Important notes
 
-This means:
-- Not every container is proxied
-- System containers (nginx, postgres, redis) are excluded
-- Containers without clear metadata are skipped
+- private keys are never intended to be committed to git
+- certs should be mounted read-only from a trusted local directory
+- for browser trust, keep the CA trusted by the OS/browser
 
-## Network Isolation
+## NGINX security
 
-By default, containers are only reachable through the proxy:
+The generated config validates configuration before reload and only updates routes if the NGINX config passes a syntax check.
 
-- Proxy connects to application containers via Docker networks or localhost
-- Applications do not require incoming TLS termination
-- Network access is controlled by Docker networking
+For HTTPS upstreams, verification can be enabled or disabled explicitly. The secure default is to verify the upstream certificate, and the route generator sets a proper trust bundle when verification is on.
 
-## Secrets and Environment Variables
+## Container identification safety
 
-- Proxy does not access application environment variables
-- Application secrets are not logged
-- Proxy only reads container metadata (labels, ports, networks)
+The project uses conservative heuristics to pick app containers:
 
-## Logging
+1. explicit container metadata when present
+2. reasonable naming patterns
+3. common web port inference
+4. exclusion of obvious system containers
 
-The proxy logs:
-- Container discovery events
-- Route generation
-- Nginx configuration updates
-- Error conditions
+This avoids broad, unsafe routing of unrelated containers.
 
-The proxy **does not log**:
-- Private keys
-- Application secrets
-- Full container environment variables
-- Docker socket paths
+## Network isolation
+
+The proxy connects to app containers over Docker networking or localhost; the application containers do not need direct incoming TLS exposure.
+
+This keeps developer-facing traffic routed through the proxy instead of exposing extra ports or requiring custom network wiring.
+
+## Logging and data handling
+
+The project logs discovery and route updates but avoids logging private key material or full app secrets. The project does not inspect app environment variables or read arbitrary secrets from running services.
 
 ## Recommendations
 
-1. **Mount Docker socket read-only** (default in examples)
-2. **Keep certificates local** (never commit to git)
-3. **Use mkcert for development** (trusted local CA)
-4. **Monitor proxy logs** for unauthorized access attempts
-5. **Restrict Docker daemon access** at the host level
-6. **Use network policies** to limit application exposure
-7. **Consider socket proxy** for additional isolation in shared environments
+1. keep the Docker socket read-only
+2. use a trusted local CA for development domains
+3. prefer the default HTTPS certificate verification for ALB-backed tunnels
+4. review proxy logs for unexpected route changes or repeated failures
+5. keep the host OS/browser CA trust updated
 
-## Compliance Notes
+## Troubleshooting security concerns
 
-- No personal data processed
-- No external API calls
-- All operations local to the Docker daemon
-- Suitable for development workstations
-- Not recommended for production without additional security measures
-
-## Troubleshooting Security Issues
-
-### Verify read-only socket mount
+### Verify the socket is read-only
 
 ```bash
 docker inspect devcontainer-nginx | jq '.Mounts[] | select(.Source | contains("docker.sock"))'
 ```
 
-Expected output includes `"RW": false`
+Expected output includes `"RW": false`.
 
-### Check certificate permissions
+### Review the generated certificate files
 
 ```bash
 docker exec devcontainer-nginx ls -la /etc/nginx/certs/
 ```
 
-Should show read-only permissions (r--r--r--)
-
-### Review logs for sensitive data
+### Review logs safely
 
 ```bash
-docker logs devcontainer-nginx | grep -i password
-docker logs devcontainer-nginx | grep -i secret
+docker logs devcontainer-nginx | grep -iE 'password|secret|token|key'
 ```
 
-Should return no results.
+This should normally return no results.

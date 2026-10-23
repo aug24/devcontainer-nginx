@@ -2,26 +2,35 @@
 
 ## Prerequisites
 
-- Docker Desktop (macOS or Linux)
-- mkcert installed and its root CA trusted: `mkcert -install`
-- mkcert root CA files available at `${HOME}/Library/Application Support/mkcert/rootCA.pem` and `rootCA-key.pem`
-- DNS configured: `*.local.dev-gutools.co.uk` → your machine IP
-- Nothing listening locally on port 443
+- Docker Desktop or Docker Engine
+- TLS certificates for your local domain, typically via `mkcert`
+- A trusted local CA for the wildcard domain you use (for example `*.local.dev-gutools.co.uk`)
+- DNS or `/etc/hosts` entries for the generated hostnames if you want browser access without an external resolver
+- Nothing else already listening on ports 80/443 on your machine
 
-## Step 1: Build and Start the Proxy
+## Step 1: Build the image
 
 ```bash
 docker build -t devcontainer-nginx:local .
-
-docker-compose up -d devcontainer-nginx
-docker logs devcontainer-nginx
 ```
 
-On first start, the container uses the mounted mkcert root CA files (`rootCA.pem` and `rootCA-key.pem`) from `${HOME}/Library/Application Support/mkcert` to generate a wildcard certificate for `*.local.dev-gutools.co.uk`. Because that CA is already trusted by your system, all `https://` URLs work without any extra flags.
+## Step 2: Start the proxy container
 
-## Step 2: Start Your Application
+```bash
+docker compose up -d --build
+```
 
-Start any container with a reasonable name (no explicit labels required):
+This starts the proxy and mounts:
+
+- the Docker socket read-only
+- your certificate directory into `/etc/nginx/certs`
+- the mkcert-local CA files for auto-generation when needed
+
+The entrypoint will create a wildcard certificate if `TLS_CERT` and `TLS_KEY` do not exist, using the local mkcert root if available. If no mkcert CA is configured, it falls back to a self-signed certificate.
+
+## Step 3: Run an app container or open a devcontainer
+
+Any container with a reasonable name is usually enough:
 
 ```bash
 docker run -d --name myapp \
@@ -29,31 +38,45 @@ docker run -d --name myapp \
   your-app:latest
 ```
 
-Supported containers:
-- Any container with a name and a single port
-- Any dev container with a name and a single port
-- Any dev container with `portsAttributes`
+Supported patterns include:
 
-## Step 3: Open the Homepage
+- containers with a single exposed or published port
+- dev containers with forwarded ports or `portsAttributes`
+- any container that the built-in discovery heuristics recognize as a dev target
 
-Open: `https://devcontainer-nginx.local.dev-gutools.co.uk/` or `http://devcontainer-nginx.local.dev-gutools.co.uk/`
+## Step 4: Open the homepage
 
-This shows:
-- All discovered containers with active routes
-- Links to your applications (open in new tab)
-- Nginx configuration details
+Visit:
 
-## Step 4: Access Your Application
+```text
+https://devcontainer-nginx.local.dev-gutools.co.uk/
+```
 
-Open `https://myapp.local.dev-gutools.co.uk` (or `http://myapp.local.dev-gutools.co.uk`) in your browser, or click either link on the homepage.
+This page shows:
 
----
+- discovered containers
+- generated routes
+- active tunnel entries
+- direct links to the generated app URLs
+- exported config endpoints
 
-**That's it.** No configuration, no labels, no code changes needed.
+## Step 5: Open your app
 
-## Using with VS Code Dev Containers
+After discovery, the app is usually available at:
 
-### devcontainer.json
+```text
+https://myapp.local.dev-gutools.co.uk
+```
+
+If you prefer, you can also use the HTTP form:
+
+```text
+http://myapp.local.dev-gutools.co.uk
+```
+
+## Using dev containers
+
+A devcontainer with a forwarded port is discovered automatically. For example:
 
 ```json
 {
@@ -63,25 +86,20 @@ Open `https://myapp.local.dev-gutools.co.uk` (or `http://myapp.local.dev-gutools
 }
 ```
 
-Open in Dev Containers → automatically routed to `https://my-project.local.dev-gutools.co.uk`
+This can become:
 
-### With Multiple Ports
-
-```json
-{
-  "forwardPorts": [9100, 1234],
-  "portsAttributes": {
-    "9100": { "label": "myApp" },
-    "1234": { "label": "myApp-frontend" }
-  }
-}
+```text
+https://my-project.local.dev-gutools.co.uk
 ```
 
-This creates routes for:
-- `myapp.<base-domain>`
-- `myapp-frontend.<base-domain>`
+## Using multiple ports
 
-## Using with Docker Compose
+If a container exposes multiple ports, the project can route multiple hostnames. For instance, a devcontainer with `portsAttributes` may produce:
+
+- `myapp-backend.local.dev-gutools.co.uk`
+- `myapp-frontend.local.dev-gutools.co.uk`
+
+## Using Docker Compose
 
 ```yaml
 services:
@@ -91,34 +109,39 @@ services:
       - "3000"
 ```
 
-Then access: `https://app.local.dev-gutools.co.uk` (automatically discovered)
+This is automatically discovered and exposed as:
+
+```text
+https://app.local.dev-gutools.co.uk
+```
 
 ## Troubleshooting
 
-### Container not appearing
+### The app is not appearing
 
-1. Check proxy logs:
-   ```bash
-   docker logs devcontainer-nginx | grep -i myapp
-   ```
+1. Check the proxy logs:
 
-2. Verify container metadata:
-   ```bash
-   docker inspect myapp | jq '.Config.Labels'
-   docker inspect myapp | jq '.Config.ExposedPorts'
-   docker inspect myapp | jq '.NetworkSettings.Networks'
-   ```
+```bash
+docker logs devcontainer-nginx | tail -n 100
+```
 
-3. Check port selection:
-   ```bash
-   docker inspect myapp | jq '.Config.ExposedPorts, .HostConfig.PortBindings'
-   ```
+2. Inspect the container metadata:
 
-### TLS/Certificate errors
+```bash
+docker inspect myapp | jq '.Config.Labels, .Config.ExposedPorts, .NetworkSettings.Networks'
+```
+
+3. Verify the generated config page:
+
+```bash
+curl -k https://devcontainer-nginx.local.dev-gutools.co.uk/generated.conf
+```
+
+### TLS or certificate errors
 
 ```bash
 docker exec devcontainer-nginx ls -la /etc/nginx/certs/
-curl -v --resolve myapp.local.dev-gutools.co.uk:443:127.0.0.1 https://myapp.local.dev-gutools.co.uk
+curl -vk --resolve myapp.local.dev-gutools.co.uk:443:127.0.0.1 https://myapp.local.dev-gutools.co.uk
 ```
 
 ### Connectivity issues
@@ -127,3 +150,17 @@ curl -v --resolve myapp.local.dev-gutools.co.uk:443:127.0.0.1 https://myapp.loca
 docker exec devcontainer-nginx curl -v http://myapp:3000
 docker inspect devcontainer-nginx | jq '.NetworkSettings.Networks'
 ```
+
+## Tunnel workflow
+
+The built-in tunnels page is available at:
+
+```text
+https://devcontainer-nginx.local.dev-gutools.co.uk/tunnels
+```
+
+It supports creating local tunnel entries that reverse-proxy to an ALB or other upstream target. For HTTPS backends, you can toggle whether nginx verifies the upstream certificate before proxying.
+
+---
+
+That's it: start the proxy, run your app, and visit the generated hostname.

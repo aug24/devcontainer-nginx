@@ -1,187 +1,165 @@
 # Architecture
 
-## System Overview
+## System overview
 
+```text
+                      DNS
+                       │
+        *.local.dev-gutools.co.uk
+                       │
+                       ▼
+                Developer machine
+                 :80 / :443
+                       │
+                       ▼
+          ┌──────────────────────────┐
+          │ devcontainer-nginx       │
+          │ - Nginx TLS terminator   │
+          │ - Go discovery service  │
+          │ - route generator        │
+          │ - tunnel UI             │
+          └──────────────┬──────────┘
+                         │
+                         ▼
+                Docker Engine / sockets
+                         │
+          ┌──────────────┼───────────────┐
+          ▼              ▼               ▼
+     app container  devcontainer      another app
+      myapp:3000     api:8000       frontend:5173
 ```
-                    DNS
-                     │
-     *.local.dev-gutools.co.uk
-                     │
-                     ▼
-              Developer Mac
-                  :443
-                     │
-                     ▼
-         ┌─────────────────────┐
-         │ devcontainer-nginx  │
-         ├─────────────────────┤
-         │ Nginx (TLS term)    │
-         │ Go discovery        │
-         └──────────┬──────────┘
-                    │
-               Docker Engine
-                    │
-         ┌──────────┼──────────┐
-         ▼          ▼          ▼
-     DevContainer  DevContainer DevContainer
-     myapp:3000    api:8000     frontend:5173
-```
 
-## Single Container Design
+## Single-container design
 
-Everything runs inside one container containing:
-- Nginx (TLS termination and reverse proxy)
-- Go controller process (Docker discovery and configuration management)
+The project runs as one container that contains:
 
-## Component Architecture
+- Nginx
+- a Go controller process
+- both the generated config and the route discovery logic
+- the optional tunnel management UI
 
-```
+## Components
+
+```text
 devcontainer-nginx/
-├── cmd/main.go                 # Entry point & orchestration
-├── internal/discovery/
-│   ├── docker.go              # Docker API client wrapper
-│   ├── identifier.go          # Dev Container identification
-│   └── resolver.go            # Network connectivity resolution
-└── internal/nginx/
-    └── config.go              # Nginx configuration generation
+├── cmd/
+│   ├── main.go                     # startup, reconciliation, homepage server
+│   ├── homepage.go                 # diagnostics and HTML rendering
+│   ├── tunnel_ui.go                # tunnel UI HTML and JS
+│   ├── tunnels.go                  # tunnel request lifecycle and route generation
+│   └── ...
+├── internal/
+│   ├── discovery/
+│   │   ├── docker.go               # Docker API client
+│   │   ├── identifier.go           # devcontainer detection heuristics
+│   │   └── resolver.go             # network/port resolution
+│   └── nginx/
+│       └── config.go               # NGINX config generation and validation
+├── entrypoint.sh                   # certificate bootstrapping and process startup
+├── docker-compose.yml              # local dev setup
+└── README.md
 ```
 
-### Key Components
+## Discovery workflow
 
-**main.go** (~260 lines)
-- Command-line flag parsing
-- Docker client initialization
-- Initial container reconciliation
-- Event watching loop with debouncing
-- Graceful shutdown handling
+When the proxy starts, it:
 
-**docker.go** (~227 lines)
-- Docker daemon connection and health checking
-- Container listing and inspection
-- Event stream monitoring
-- Network management
-- Container metadata parsing
+1. reads the Docker socket
+2. lists currently running containers
+3. inspects each container's metadata
+4. classifies likely dev targets
+5. resolves a route target (shared network, published port, or forwarded port)
+6. generates a route entry and writes NGINX config
+7. validates and reloads NGINX
 
-**identifier.go** (~263 lines)
-- Conservative container detection
-- Project name extraction from labels
-- Hostname sanitization for DNS compliance
-- Application port discovery
-- Complete metadata validation
+## Container identification
 
-**resolver.go** (~173 lines)
-- Shared network detection
-- Route resolution (container name or published port)
-- Docker Desktop `host.docker.internal` support
-- Network preference ranking
+The implementation uses conservative heuristics rather than requiring app changes:
 
-**config.go** (~192 lines)
-- Dynamic server block generation
-- Upstream configuration
-- TLS certificate setup
-- WebSocket proxy configuration
-- Atomic config file writing
-- Configuration validation with `nginx -t`
-- Graceful Nginx reload with `nginx -s reload`
+1. explicit Dev Container metadata when present
+2. Docker Compose metadata when present
+3. ordinary container naming patterns
+4. system container exclusions
 
-## How Discovery Works
+The discovery layer keeps the workflow permissive while avoiding obvious non-app containers.
 
-### Container Identification
+## Port selection logic
 
-A container is recognized as a development container using heuristics:
+The resolver prefers the best available route target in this order:
 
-1. **Dev Container metadata labels** (if present): `devcontainer.*` labels indicate explicit intent
-2. **Docker Compose labels** (if present): `com.docker.compose.*` labels indicate orchestrated apps
-3. **Reasonable naming** (default): containers with sensible names (e.g., `myapp`, `frontend`, `api`) are proxied
-4. **System container exclusions**: known system containers (nginx, postgres, redis, etc.) are skipped
+1. explicit `devcontainer.application.port`
+2. forwarded ports from devcontainer metadata
+3. other published or exposed ports
+4. common web ports as a fallback
+5. skip containers that are still ambiguous
 
-No labels are **required**. Containers created with `docker run --name myapp` are automatically discovered and proxied.
+## Hostname generation
 
-### Port Selection
+Generated hostnames are based on:
 
-The proxy determines which port to proxy to:
+- `devcontainer.hostname` if set
+- Compose project naming when available
+- a sanitized container name otherwise
 
-1. **Explicit label** → `devcontainer.application.port`
-2. **Dev Container `portsAttributes` labels** → if set, each labeled forwarded port becomes a route
-3. **Dev Container forwarded ports** → uses existing metadata
-4. **Single exposed port** → if only one TCP port is exposed
-5. **Common web ports** → tries 3000, 5173, 8000, 8080, 80 in order
-6. **Forwarded-port order fallback** → if multiple forwarded ports are present
-7. **Ambiguous** → container is skipped with warning
+The final route is built as:
 
-### Hostname Generation
+```text
+<hostname>.<base-domain>
+```
 
-Generated from:
+## NGINX config generation
 
-1. **Hostname label** → `devcontainer.hostname`
-2. **Compose project name** → `com.docker.compose.project`
-3. **Sanitized container name** → lowercase, hyphens only
+The config generator produces:
 
-Final hostname: `{project-name}.local.dev-gutools.co.uk`
+- default HTTP and HTTPS listeners
+- one upstream per route
+- proxy blocks for each hostname
+- websocket-friendly proxy headers
+- TLS certificate settings for the external listener
+- optional upstream certificate verification settings
 
-### Network Connectivity
+The generator deduplicates by hostname and replaces stale entries with newer route data when duplicate names appear.
 
-Reaches containers via:
+## HTTPS upstream verification
 
-1. **Shared Docker network** (preferred) → direct container-name DNS resolution
-2. **Published port** (fallback) → via `host.docker.internal`
-3. **Unreachable** → container is skipped
+For tunnel routes that use HTTPS upstreams, the config generator emits:
 
-## Nginx Configuration
+- `proxy_ssl_server_name on;`
+- `proxy_ssl_name <backend-hostname>;`
+- `proxy_ssl_verify on|off;`
+- `proxy_ssl_trusted_certificate /etc/ssl/certs/ca-certificates.crt;` when verification is enabled
 
-### Base Configuration
+This keeps certificate checks secure by default while allowing explicit opt-out with the tunnel form checkbox.
 
-Static configuration (`/etc/nginx/nginx.conf`):
-- Worker configuration
-- TLS settings
-- Gzip compression
-- Access logging
+## Event-driven updates
 
-### Generated Configuration
+The app watches Docker events and re-runs reconciliation after a debounce period to avoid churn from rapid startup and shutdown events.
 
-Dynamic routes (`/etc/nginx/conf.d/generated.conf`):
-- Server blocks for each discovered container
-- Upstream configuration
-- WebSocket support with proper headers
-- Atomic updates with validation
+## Security model
 
-### Safe Updates
+- Docker socket is mounted read-only
+- the proxy only reads metadata and does not mutate containers
+- it avoids logging sensitive values like certificate contents or app secrets
+- generated config is validated before reload
 
-When Docker state changes:
+## Operational behavior
 
-1. Discover current eligible containers
-2. Resolve their routes
-3. Generate a complete temporary configuration
-4. Validate with `nginx -t`
-5. Atomically replace the generated configuration
-6. Gracefully reload Nginx with `nginx -s reload`
-7. If validation fails, retain the previous working configuration
+When config changes, the process:
 
-## Event-Driven Updates
+1. builds a fresh route set
+2. writes the config atomically
+3. runs `nginx -t`
+4. reloads nginx only if validation passes
+5. keeps the latest valid config in place if validation fails
 
-- **Docker Events**: Uses Docker events API instead of polling
-- **Debouncing**: Coalesces rapid events (default 500ms)
-- **Full Reconciliation**: After debounce period, performs complete reconciliation
-- **Recovery**: On Docker API disconnect, reconnects and reconciles
+## Tunnel flow
 
-## TLS/Certificate Handling
+Tunnels are represented as `TunnelRequest` / `TunnelEntry` objects and converted into nginx routes via `TunnelManager.NginxRoutes()`. The route includes:
 
-- Nginx terminates TLS
-- Wildcard certificate mounted from host
-- Certificate paths configurable via environment variables
-- Support for mkcert-generated certificates
+- hostname
+- local port
+- upstream protocol
+- `VerifySSL`
+- `VerifyName` (the ALB or upstream host to validate against)
 
-## Security
-
-- Docker socket mounted **read-only**
-- Proxy only inspects Docker state; does not create/modify containers
-- No secrets logged
-- Conservative container detection
-
-## Performance Characteristics
-
-- Event-driven discovery (no polling)
-- Debounced configuration updates
-- Minimal resource usage: ~30-50MB memory, <1% CPU
-- Sub-100ms route generation
-- Written in Go for efficiency
+This is how the UI checkbox and generated config remain aligned with the actual HTTPS certificate verification behavior.

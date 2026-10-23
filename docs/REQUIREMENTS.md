@@ -1,27 +1,34 @@
 # Requirements and Constraints
 
-Original specification and design requirements for devcontainer-nginx.
+This project was designed to let developers access local apps without per-project setup, while keeping the proxy safe and conservative.
 
-See [copilot.md](./copilot.md) for the complete requirements document.
+## Core principles
 
-## Key Principles
+1. discover the current Docker and Dev Container state without requiring repo changes
+2. avoid adding new labels, networks, or app configuration requirements
+3. keep the proxy safe, local, and easy to reason about
+4. use existing host metadata whenever possible
+5. validate generated config before reloading NGINX
 
-1. **Discover existing Docker/Dev Container state; do not impose new per-project configuration**
-2. No changes required to application repositories
-3. Zero configuration needed for developers
-4. Conservative container detection using existing metadata
-5. Safe, read-only Docker API access
+## Critical constraints
 
-## Critical Constraints
+- do not require each application repository to adopt a new convention
+- do not require teams to join a new shared Docker network
+- do not require Traefik-style labels or app-specific config files
+- do not require an extra service to proxy the Docker socket
+- do not modify running application containers or their source trees
+- do not create new per-project startup steps solely for routing
 
-- Do NOT require individual teams to adopt a new Docker network, labels, environment variables, `devcontainer.json` settings, Dockerfile directives, or Compose configuration.
-- Do NOT assume a Docker network named `dev-proxy` exists.
-- Do NOT require Dev Containers to join a new shared network.
-- Do NOT require Traefik-style labels.
-- Do NOT require teams to add `EXPOSE` directives solely for this proxy.
-- Do NOT modify application repositories.
-- Do NOT make a new convention a prerequisite unless demonstrated to be necessary.
+## Design philosophy
 
-## Design Philosophy
+The implementation should prefer the behaviour already present in docker and devcontainers, then layer only the minimal tooling needed to expose those services as local HTTPS routes.
 
-The implementation must first exploit **existing Docker and Dev Containers behaviour**.
+This is why the project inspects metadata, resolves ports conservatively, and generates route names automatically instead of forcing developers to maintain explicit configuration.
+
+## Operational goals
+
+- automatic route generation for valid app containers
+- safe fallback when a container cannot be confidently identified
+- browser-friendly local URLs under a wildcard dev domain
+- consistent TLS termination and generated route inspection
+- optional tunnel support when an upstream ALB or internal service needs to be proxied

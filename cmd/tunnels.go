@@ -39,6 +39,56 @@ type TunnelRequest struct {
 	Alias              string `json:"alias"`
 	LocalPort          int    `json:"localPort"`
 	UpstreamProtocol   string `json:"upstreamProtocol"`
+	VerifySSL          bool   `json:"verifySSL"`
+	verifySSLSet       bool   `json:"-"`
+}
+
+func (r *TunnelRequest) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		Profile            string `json:"profile"`
+		Region             string `json:"region"`
+		Stack              string `json:"stack"`
+		Stage              string `json:"stage"`
+		App                string `json:"app"`
+		Alb                string `json:"alb"`
+		Name               string `json:"name"`
+		CredentialCommands string `json:"credentialCommands"`
+		TunnelCommand      string `json:"tunnelCommand"`
+		Host               string `json:"host"`
+		TargetPort         int    `json:"targetPort"`
+		Alias              string `json:"alias"`
+		LocalPort          int    `json:"localPort"`
+		UpstreamProtocol   string `json:"upstreamProtocol"`
+		VerifySSL          *bool  `json:"verifySSL"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	*r = TunnelRequest{
+		Profile:            raw.Profile,
+		Region:             raw.Region,
+		Stack:              raw.Stack,
+		Stage:              raw.Stage,
+		App:                raw.App,
+		Alb:                raw.Alb,
+		Name:               raw.Name,
+		CredentialCommands: raw.CredentialCommands,
+		TunnelCommand:      raw.TunnelCommand,
+		Host:               raw.Host,
+		TargetPort:         raw.TargetPort,
+		Alias:              raw.Alias,
+		LocalPort:          raw.LocalPort,
+		UpstreamProtocol:   raw.UpstreamProtocol,
+		VerifySSL:          true,
+	}
+	if raw.VerifySSL != nil {
+		r.VerifySSL = *raw.VerifySSL
+		r.verifySSLSet = true
+	} else {
+		r.verifySSLSet = false
+		r.VerifySSL = true
+	}
+	return nil
 }
 
 type TunnelEntry struct {
@@ -57,6 +107,7 @@ type TunnelEntry struct {
 	Alias              string    `json:"alias"`
 	LocalPort          int       `json:"localPort"`
 	UpstreamProtocol   string    `json:"upstreamProtocol"`
+	VerifySSL          bool      `json:"verifySSL"`
 	Status             string    `json:"status"`
 	LocalEndpoint      string    `json:"localEndpoint"`
 	LastOutput         string    `json:"lastOutput"`
@@ -172,21 +223,24 @@ func (tm *TunnelManager) EnsureConfig(baseDomain string, configGen *nginx.Config
 	routes := tm.NginxRoutes(baseDomain)
 	log.Printf("Tunnel config refresh: baseDomain=%q, tunnelCount=%d, routes=%d", baseDomain, len(tm.tunnels), len(routes))
 	for _, route := range routes {
-		log.Printf("Tunnel route candidate: hostname=%q target=%s:%d", route.Hostname, route.TargetHost, route.TargetPort)
+		log.Printf("Tunnel route candidate: hostname=%q target=%s:%d protocol=%q verifySSL=%v", route.Hostname, route.TargetHost, route.TargetPort, route.Protocol, route.VerifySSL)
 	}
 	if len(routes) == 0 {
 		return
 	}
 
 	merged := append([]nginx.Route{}, configGen.CurrentRoutes()...)
-	seen := make(map[string]struct{}, len(merged))
-	for _, route := range merged {
-		seen[route.Hostname] = struct{}{}
+	seen := make(map[string]int, len(merged))
+	for i, route := range merged {
+		seen[route.Hostname] = i
 	}
 	for _, route := range routes {
-		if _, ok := seen[route.Hostname]; !ok {
-			merged = append(merged, route)
+		if i, ok := seen[route.Hostname]; ok {
+			merged[i] = route
+			continue
 		}
+		merged = append(merged, route)
+		seen[route.Hostname] = len(merged) - 1
 	}
 
 	if err := configGen.ApplyRoutes(merged); err != nil {
@@ -218,6 +272,8 @@ func (tm *TunnelManager) NginxRoutes(baseDomain string) []nginx.Route {
 			TargetHost:    "127.0.0.1",
 			TargetPort:    tunnel.LocalPort,
 			Protocol:      tunnel.UpstreamProtocol,
+			VerifySSL:     tunnel.VerifySSL,
+			VerifyName:    tunnel.Alb,
 		})
 	}
 	return out
@@ -397,8 +453,12 @@ func (tm *TunnelManager) Create(request TunnelRequest) (*TunnelEntry, error) {
 	if strings.TrimSpace(request.UpstreamProtocol) == "" {
 		request.UpstreamProtocol = "https"
 	}
+	if !request.verifySSLSet {
+		request.VerifySSL = true
+	}
+	log.Printf("Normalized tunnel request: name=%q alias=%q verifySSL=%v verifySSLSet=%v", request.Name, request.Alias, request.VerifySSL, request.verifySSLSet)
 
-	log.Printf("Creating tunnel request: name=%q alias=%q alb=%q localPort=%d", request.Name, request.Alias, request.Alb, request.LocalPort)
+	log.Printf("Creating tunnel request: name=%q alias=%q alb=%q localPort=%d upstreamProtocol=%q verifySSL=%v verifySSLSet=%v", request.Name, request.Alias, request.Alb, request.LocalPort, request.UpstreamProtocol, request.VerifySSL, request.verifySSLSet)
 
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
@@ -418,6 +478,7 @@ func (tm *TunnelManager) Create(request TunnelRequest) (*TunnelEntry, error) {
 		Alias:              request.Alias,
 		LocalPort:          request.LocalPort,
 		UpstreamProtocol:   request.UpstreamProtocol,
+		VerifySSL:          request.VerifySSL,
 		Status:             "pending",
 		LocalEndpoint:      fmt.Sprintf("127.0.0.1:%d", request.LocalPort),
 		CreatedAt:          time.Now(),
@@ -486,13 +547,13 @@ func (tm *TunnelManager) Start(id string) error {
 
 	tm.mu.Lock()
 	tm.process[id] = cmd
-	entry.Status = "starting"
+	entry.Status = "running"
 	entry.LastOutput = strings.TrimSpace(stdout.String() + "\n" + stderr.String())
 	if entry.LastOutput == "" {
-		entry.LastOutput = "tunnel command launched"
+		entry.LastOutput = fmt.Sprintf("SSM tunnel active for %s via %s:%d on local %s", entry.Alias, entry.Alb, entry.TargetPort, entry.LocalEndpoint)
 	}
 	tm.mu.Unlock()
-	log.Printf("Tunnel launched: id=%s name=%q alias=%q output=%q", id, entry.Name, entry.Alias, entry.LastOutput)
+	log.Printf("Tunnel launched: id=%s name=%q alias=%q status=%s output=%q", id, entry.Name, entry.Alias, entry.Status, entry.LastOutput)
 	return nil
 }
 
@@ -512,77 +573,139 @@ func (tm *TunnelManager) StartAll() error {
 }
 
 func decodeTunnelRequest(r any) (TunnelRequest, error) {
-	var req TunnelRequest
 	if data, ok := r.([]byte); ok {
-		if err := json.Unmarshal(data, &req); err != nil {
+		var raw map[string]any
+		if err := json.Unmarshal(data, &raw); err != nil {
 			return TunnelRequest{}, err
 		}
-		return req, nil
+		return decodeTunnelRequestFromMap(raw)
 	}
 	if data, ok := r.(map[string]any); ok {
-		if value, found := data["name"]; found {
-			if v, ok := value.(string); ok { req.Name = v }
-		}
-		if value, found := data["profile"]; found {
-			if v, ok := value.(string); ok { req.Profile = v }
-		}
-		if value, found := data["region"]; found {
-			if v, ok := value.(string); ok { req.Region = v }
-		}
-		if value, found := data["stack"]; found {
-			if v, ok := value.(string); ok { req.Stack = v }
-		}
-		if value, found := data["stage"]; found {
-			if v, ok := value.(string); ok { req.Stage = v }
-		}
-		if value, found := data["app"]; found {
-			if v, ok := value.(string); ok { req.App = v }
-		}
-		if value, found := data["alb"]; found {
-			if v, ok := value.(string); ok { req.Alb = v }
-		}
-		if value, found := data["credentialCommands"]; found {
-			if v, ok := value.(string); ok { req.CredentialCommands = v }
-		}
-		if value, found := data["tunnelCommand"]; found {
-			if v, ok := value.(string); ok { req.TunnelCommand = v }
-		}
-		if value, found := data["host"]; found {
-			if v, ok := value.(string); ok { req.Host = v }
-		}
-		if value, found := data["targetPort"]; found {
-			switch v := value.(type) {
-			case float64:
-				req.TargetPort = int(v)
-			case string:
-				if parsed := strings.TrimSpace(v); parsed != "" {
-					if n, err := fmt.Sscanf(parsed, "%d", &req.TargetPort); err == nil && n == 1 {
-						// handled later
-					}
-				}
-			}
-		}
-		if value, found := data["alias"]; found {
-			if v, ok := value.(string); ok { req.Alias = v }
-		}
-		if value, found := data["localPort"]; found {
-			switch v := value.(type) {
-			case float64:
-				req.LocalPort = int(v)
-			case string:
-				if parsed := strings.TrimSpace(v); parsed != "" {
-					if n, err := fmt.Sscanf(parsed, "%d", &req.LocalPort); err == nil && n == 1 {
-						// handled later
-					}
-				}
-			}
-		}
-		if value, found := data["upstreamProtocol"]; found {
-			if v, ok := value.(string); ok { req.UpstreamProtocol = v }
-		}
-		return req, nil
+		return decodeTunnelRequestFromMap(data)
 	}
 	return TunnelRequest{}, errors.New("unsupported tunnel request type")
+}
+
+func decodeTunnelRequestFromMap(data map[string]any) (TunnelRequest, error) {
+	var req TunnelRequest
+	if data == nil {
+		return req, nil
+	}
+	if value, found := data["name"]; found {
+		if v, ok := value.(string); ok {
+			req.Name = v
+		}
+	}
+	if value, found := data["profile"]; found {
+		if v, ok := value.(string); ok {
+			req.Profile = v
+		}
+	}
+	if value, found := data["region"]; found {
+		if v, ok := value.(string); ok {
+			req.Region = v
+		}
+	}
+	if value, found := data["stack"]; found {
+		if v, ok := value.(string); ok {
+			req.Stack = v
+		}
+	}
+	if value, found := data["stage"]; found {
+		if v, ok := value.(string); ok {
+			req.Stage = v
+		}
+	}
+	if value, found := data["app"]; found {
+		if v, ok := value.(string); ok {
+			req.App = v
+		}
+	}
+	if value, found := data["alb"]; found {
+		if v, ok := value.(string); ok {
+			req.Alb = v
+		}
+	}
+	if value, found := data["credentialCommands"]; found {
+		if v, ok := value.(string); ok {
+			req.CredentialCommands = v
+		}
+	}
+	if value, found := data["tunnelCommand"]; found {
+		if v, ok := value.(string); ok {
+			req.TunnelCommand = v
+		}
+	}
+	if value, found := data["host"]; found {
+		if v, ok := value.(string); ok {
+			req.Host = v
+		}
+	}
+	if value, found := data["targetPort"]; found {
+		switch v := value.(type) {
+		case float64:
+			req.TargetPort = int(v)
+		case string:
+			if parsed := strings.TrimSpace(v); parsed != "" {
+				if n, err := fmt.Sscanf(parsed, "%d", &req.TargetPort); err == nil && n == 1 {
+					// handled later
+				}
+			}
+		}
+	}
+	if value, found := data["alias"]; found {
+		if v, ok := value.(string); ok {
+			req.Alias = v
+		}
+	}
+	if value, found := data["localPort"]; found {
+		switch v := value.(type) {
+		case float64:
+			req.LocalPort = int(v)
+		case string:
+			if parsed := strings.TrimSpace(v); parsed != "" {
+				if n, err := fmt.Sscanf(parsed, "%d", &req.LocalPort); err == nil && n == 1 {
+					// handled later
+				}
+			}
+		}
+	}
+	if value, found := data["upstreamProtocol"]; found {
+		if v, ok := value.(string); ok {
+			req.UpstreamProtocol = v
+		}
+	}
+	if value, found := data["verifySSL"]; found {
+		req.verifySSLSet = true
+		if v, ok := value.(bool); ok {
+			req.VerifySSL = v
+		}
+	}
+	return req, nil
+}
+
+func tunnelEntryStatus(entry *TunnelEntry) string {
+	if entry == nil {
+		return "pending"
+	}
+	status := strings.TrimSpace(entry.Status)
+	if status != "" {
+		if status == "failed" {
+			return status
+		}
+		if status == "running" || status == "starting" || status == "pending" || status == "stopping" || status == "stopped" {
+			return status
+		}
+	}
+	output := strings.TrimSpace(entry.LastOutput)
+	if output == "" {
+		return "pending"
+	}
+	lower := strings.ToLower(output)
+	if strings.Contains(lower, "cannot perform start session") || strings.Contains(lower, "broken pipe") || strings.Contains(lower, "sessionmanagerplugin is not found") || strings.Contains(lower, "aws bootstrap command failed") || strings.Contains(lower, "no running ec2 instance found") {
+		return "failed"
+	}
+	return "running"
 }
 
 func tunnelDiagnostics(tunnelManager *TunnelManager, baseDomain string) []ContainerDiagnostic {
@@ -593,10 +716,7 @@ func tunnelDiagnostics(tunnelManager *TunnelManager, baseDomain string) []Contai
 	entries := tunnelManager.Snapshot()
 	out := make([]ContainerDiagnostic, 0, len(entries))
 	for _, entry := range entries {
-		status := strings.TrimSpace(entry.Status)
-		if status == "" {
-			status = "pending"
-		}
+		status := tunnelEntryStatus(&entry)
 		hostName := strings.TrimSpace(entry.Alias)
 		if hostName == "" {
 			hostName = entry.Host
@@ -619,6 +739,9 @@ func tunnelDiagnostics(tunnelManager *TunnelManager, baseDomain string) []Contai
 			fmt.Sprintf("alb=%s:%d", entry.Alb, entry.TargetPort),
 			fmt.Sprintf("local=%s", entry.LocalEndpoint),
 		}
+		if output := strings.TrimSpace(entry.LastOutput); output != "" {
+			metaParts = append(metaParts, "lastOutput="+output)
+		}
 		out = append(out, ContainerDiagnostic{
 			Name:     entry.Alias,
 			Status:   status,
@@ -629,4 +752,3 @@ func tunnelDiagnostics(tunnelManager *TunnelManager, baseDomain string) []Contai
 	}
 	return out
 }
-

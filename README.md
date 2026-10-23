@@ -1,73 +1,87 @@
 # devcontainer-nginx
 
-A Docker-based reverse proxy that automatically discovers and routes to development containers without requiring per-project configuration.
+A Docker-based reverse proxy for local development. It inspects running Docker containers and Dev Containers, discovers their exposed or forwarded ports, and automatically generates HTTPS routes like `https://myapp.local.dev-gutools.co.uk`.
 
 ![screenshot.png](docs/screenshot.png)
 
 ## TL;DR
 
-### Start server
 ```bash
 docker build -t devcontainer-nginx:local .
-docker-compose up -d --build --force-recreate devcontainer-nginx
+docker compose up -d --build
 ```
 
-### Start your app 
- - any container or devcontainer with a name and a single port
- - any devcontainer with ports and portAttributes
+Then start any app container, for example:
 
-eg
 ```bash
 docker run -d --name myapp -p 3000:3000 your-app:latest
 ```
 
-### Access it
-Open https://myapp.local.dev-gutools.co.uk
+Open:
 
-See the [quick start guide](./docs/QUICK-START.md) for detailed instructions.
+```text
+https://myapp.local.dev-gutools.co.uk
+```
 
-### The UI
+The proxy also hosts a diagnostics homepage at:
 
-The proxy also serves a simple homepage at `https://devcontainer-nginx.local.dev-gutools.co.uk/`.
+```text
+https://devcontainer-nginx.local.dev-gutools.co.uk/
+```
 
-It shows:
+See the [Quick Start Guide](./docs/QUICK-START.md) for the full setup flow.
 
-- which containers were discovered
-- which routes are active
-- the generated app URLs
-- links to the live nginx config and container list
+## What this project does
 
-This is the easiest way to check what the proxy is routing and to open an app quickly from the browser.
+`devcontainer-nginx` runs as a single container with:
 
-## What This Is
+- an Nginx TLS terminator and reverse proxy
+- a Go discovery controller that watches Docker state
+- automatic route generation for discovered containers and Dev Containers
+- a homepage showing active routes and config details
+- optional tunnel management for AWS ALB / SSM-style host tunnels
 
-**devcontainer-nginx** is a single container that:
+It is designed to work with the default Docker and Dev Container metadata already present on the machine. In most cases, no app-level labels or per-project configuration are required.
 
-- Discovers running Docker containers and Dev Containers automatically using the Docker Engine API
-- Generates HTTPS reverse proxy routes based on existing container metadata
-- Exposes applications via secure hostnames: `https://<project>.local.dev-gutools.co.uk`
-- Requires **zero configuration changes** in application repositories
+## Main features
 
-**No labels, no configuration, no code changes needed.** Simply start your app and access it via `https://app-name.local.dev-gutools.co.uk`.
+- Zero-config discovery of Docker and Dev Container apps
+- Automatic hostname generation from container names or labels
+- HTTPS by default for generated app routes
+- Smart port detection for exposed and forwarded ports
+- Safe config generation with `nginx -t` validation before reload
+- Homepage and debug endpoints for route inspection
+- Optional tunnel UI for creating ALB-backed local tunnels
+- HTTPS upstream verification toggle for background fetches
 
 ## Documentation
 
-- **[Quick Start Guide](./docs/QUICK-START.md)** — Setup and first run
-- **[Configuration Reference](./docs/CONFIGURATION.md)** — Environment variables and advanced options
-- **[Architecture](./docs/ARCHITECTURE.md)** — How the proxy works, component details
-- **[Building](./docs/BUILDING.md)** — Build from source or Docker image
-- **[Security](./docs/SECURITY.md)** — Security considerations and best practices
-- **[Requirements](./docs/REQUIREMENTS.md)** — Design principles and constraints
+- [Quick Start Guide](./docs/QUICK-START.md) — install, run, and access apps
+- [Configuration Reference](./docs/CONFIGURATION.md) — environment variables and runtime settings
+- [Architecture](./docs/ARCHITECTURE.md) — component and request flow details
+- [Building](./docs/BUILDING.md) — local and Docker builds
+- [Security](./docs/SECURITY.md) — TLS, Docker socket, and operational guidance
+- [Requirements](./docs/REQUIREMENTS.md) — design constraints and goals
 
-## Key Features
+## Example workflow
 
-- **Zero configuration** — No labels, environment variables, or code changes needed
-- **Automatic discovery** — Finds containers using Docker Engine API and existing metadata
-- **HTTPS by default** — TLS-terminated reverse proxy with wildcard certificates
-- **Smart port detection** — Intelligently selects ports from exposed ports, forwarded ports, or labels
-- **Event-driven** — Responds to Docker container start/stop events (no polling)
-- **Safe updates** — Validates Nginx configuration before reloading
-- **Read-only access** — Docker socket mounted read-only for security
+1. Start the container with Docker Compose.
+2. Run a local app container or open a Dev Container.
+3. Let the proxy discover the app and generate a hostname.
+4. Visit the generated host or the homepage to inspect routes.
+5. Optionally use the built-in tunnel UI for ALB-backed tunnel setup.
+
+## Homepage and admin endpoints
+
+The proxy exposes a diagnostics homepage and a few useful endpoints:
+
+- `https://devcontainer-nginx.<base-domain>/`
+- `https://devcontainer-nginx.<base-domain>/nginx.conf`
+- `https://devcontainer-nginx.<base-domain>/generated.conf`
+- `https://devcontainer-nginx.<base-domain>/containers`
+- `https://devcontainer-nginx.<base-domain>/tunnels`
+
+The `/tunnels` page is used to create and manage host tunnel entries when a backend ALB or internal target is required.
 
 ## License
 

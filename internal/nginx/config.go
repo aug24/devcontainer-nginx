@@ -37,6 +37,8 @@ type Route struct {
 	TargetHost    string
 	TargetPort    int
 	Protocol      string
+	VerifySSL     bool
+	VerifyName    string
 }
 
 // ApplyRoutes stores the route set, renders config, and writes it atomically under one lock.
@@ -117,15 +119,18 @@ func (cg *ConfigGenerator) renderConfig(routes []Route) string {
 	}
 
 	// Deduplicate routes by hostname
-	seen := make(map[string]bool)
+	seen := make(map[string]int)
 	var uniqueRoutes []Route
 
 	for _, route := range routes {
-		if seen[route.Hostname] {
-			log.Printf("WARNING: Duplicate hostname %s; skipping duplicate\n", route.Hostname)
+		if idx, ok := seen[route.Hostname]; ok {
+			if idx < len(uniqueRoutes) {
+				uniqueRoutes[idx] = route
+				log.Printf("DEBUG: replaced duplicate hostname route %s with newer config (protocol=%q verifySSL=%v)", route.Hostname, route.Protocol, route.VerifySSL)
+			}
 			continue
 		}
-		seen[route.Hostname] = true
+		seen[route.Hostname] = len(uniqueRoutes)
 		uniqueRoutes = append(uniqueRoutes, route)
 	}
 
@@ -231,6 +236,14 @@ func (cg *ConfigGenerator) generateServerBlock(route Route) []string {
 	if protocol == "" {
 		protocol = "http"
 	}
+	verifySSL := route.VerifySSL
+	if protocol != "https" {
+		verifySSL = false
+	}
+	verifyName := strings.TrimSpace(route.VerifyName)
+	if verifyName == "" {
+		verifyName = "$host"
+	}
 
 	proxyLocation := []string{
 		"    location / {",
@@ -239,8 +252,18 @@ func (cg *ConfigGenerator) generateServerBlock(route Route) []string {
 	if protocol == "https" {
 		proxyLocation = append(proxyLocation,
 			"        proxy_ssl_server_name on;",
-			"        proxy_ssl_verify off;",
+			fmt.Sprintf("        proxy_ssl_name %s;", verifyName),
 		)
+		if verifySSL {
+			proxyLocation = append(proxyLocation,
+				"        proxy_ssl_verify on;",
+				"        proxy_ssl_trusted_certificate /etc/ssl/certs/ca-certificates.crt;",
+			)
+		} else {
+			proxyLocation = append(proxyLocation,
+				"        proxy_ssl_verify off;",
+			)
+		}
 	}
 	proxyLocation = append(proxyLocation,
 		"",
