@@ -1,0 +1,17 @@
+Logs page
+
+This page displays the recent devcontainer-nginx log output, which is useful when diagnosing route discovery, configuration errors, or tunnel startup problems.
+
+How to use it:
+- Newest log lines are at the top.
+- Look for failed route generation, Docker inspection errors, tunnel startup errors, or Nginx validation failures.
+
+Common troubleshooting:
+- If a route is missing, look for discovery or port detection errors.
+- If a tunnel fails, look for AWS SSM or session-manager-plugin errors.
+- If Nginx reloads fail, inspect the generated config and validation output.
+
+The logs are a good first place to check before making changes to the app config or tunnel setup.
+
+In order to add logging, edit the source to include more `log.Println("Raw Value:", raw)` statements, then rebuild the
+container and check the logs page for the output.

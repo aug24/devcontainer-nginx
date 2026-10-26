@@ -44,10 +44,12 @@ COPY entrypoint.sh /entrypoint.sh
 COPY scripts/host-tunnel /usr/local/bin/host-tunnel
 COPY scripts/shell /usr/local/bin/shell
 COPY static /usr/share/devcontainer-nginx/static
+COPY docs/help /usr/share/devcontainer-nginx/docs/help
 
 # Create required directories
 RUN mkdir -p /etc/nginx/conf.d /etc/nginx/certs /var/log/nginx \
     /var/cache/nginx /var/log/devcontainer-nginx \
+    /usr/share/devcontainer-nginx/docs/help \
     && chown -R www-data:www-data /var/log/nginx /var/cache/nginx /var/log/devcontainer-nginx \
     && chmod 755 /var/log/devcontainer-nginx \
     && chmod +x /entrypoint.sh /usr/local/bin/host-tunnel /usr/local/bin/shell

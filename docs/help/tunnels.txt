@@ -1,0 +1,20 @@
+Tunnels page
+
+This page creates and manages AWS-backed local tunnels that expose a remote service through a local port, usually via SSM / host-tunnel tooling.
+
+How to use it:
+- Fill in Name, Profile, Region, Stack, Stage, App, and ALB for the target environment.
+- Stack, Stage and App are used to identify the bastion host.
+- Keep the HTTPS upstream and upstream SSL verification options enabled unless you intentionally need an insecure or non-TLS target.
+- Click Create tunnel to start a tunnel, then use Start/Stop/Delete on each entry as needed.
+
+Requirements:
+- The AWS credential bootstrap command on the AWS Config page must already have succeeded.
+- The selected profile/region must have permission to create the requested tunnel session.
+- The target ALB and app metadata must match the environment you are trying to access.
+- The tunnel command relies on a local port such as 40000 and a host-tunnel binary that is available in the container.
+
+If a tunnel won’t connect, check the AWS config, the tunnel output log, and the logs page for the underlying SSM or AWS error.
+
+Tunnels will drop if unused. The start/stop buttons are there for convenience.
+

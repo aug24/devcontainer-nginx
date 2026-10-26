@@ -1,0 +1,17 @@
+Command generator page
+
+This page builds copy-ready shell commands for working with the local devcontainer-nginx environment and the AWS tunnel helper tooling.
+
+How to use it:
+- Set the container name, user, profile, stack, stage, app, region, and any host-tunnel parameters.
+- Pick shell or host-tunnel as the command type.
+- Copy the generated command and paste it into a running shell when needed.
+
+Requirements:
+- The container must be able to run Docker exec commands as the selected user.
+- For host-tunnel creation, the target ALB, local port, and tunnel name are required.
+- If using a local AWS profile, the profile must exist in the container’s AWS configuration and match the bootstrap setup in the AWS Config page.
+- For port forwarding or remote host access, ensure the underlying tunnel tool and AWS profile are configured correctly before running the generated command.
+
+This generator is intended to save time when you need to reproduce a working command outside the browser UI.
+

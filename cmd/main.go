@@ -674,6 +674,7 @@ func renderLogsPage(logText string) string {
 	b.WriteString("<div class=\"log-shell\"><pre>")
 	b.WriteString(html.EscapeString(logText))
 	b.WriteString("</pre></div>")
+	b.WriteString(renderHelpSection("logs"))
 	b.WriteString("</body></html>")
 	return b.String()
 }

@@ -21,6 +21,7 @@ func renderAWSConfigPage(cfg AWSConfig) string {
 	b.WriteString("</form>")
 	b.WriteString("<pre class=\"aws-output\">" + html.EscapeString(cfg.Output) + "</pre>")
 	b.WriteString("<div class=\"aws-exit-status\">Exit code: " + html.EscapeString(fmt.Sprintf("%d", cfg.ExitCode)) + "</div>")
+	b.WriteString(renderHelpSection("aws-config"))
 	b.WriteString("<script src=\"/static/app.js\"></script>")
 	b.WriteString("</body></html>")
 	return b.String()
@@ -80,6 +81,7 @@ func renderTunnelPage(cfg AWSConfig, tunnels []TunnelEntry) string {
 		}
 	}
 	b.WriteString("</tbody></table>")
+	b.WriteString(renderHelpSection("tunnels"))
 	b.WriteString("<script src=\"/static/app.js\"></script>")
 	b.WriteString("</body></html>")
 	return b.String()
@@ -110,6 +112,7 @@ func renderCommandGeneratorPage() string {
 	b.WriteString("</form>")
 	b.WriteString("<h2>Command</h2>")
 	b.WriteString("<pre id=\"generated-command\" class=\"command-box\"></pre>")
+	b.WriteString(renderHelpSection("command-generator"))
 	b.WriteString("<script src=\"/static/app.js\"></script>")
 	b.WriteString("</body></html>")
 	return b.String()

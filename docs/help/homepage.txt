@@ -1,0 +1,40 @@
+Home page overview
+
+This page is the main status dashboard for devcontainer-nginx. It shows each discovered container or tunnel, whether it was routed successfully, why it was or was not included, and the hostnames generated for it.
+
+How to use it:
+- Review the Process column to see container names and metadata.
+- Use Status to tell whether a container is routed, partial, or skipped.
+- Check Reason for the underlying cause when a route is missing.
+- Follow the generated HTTPS/HTTP links in Routes to open the app directly.
+
+Common setup requirements:
+- The app container and devcontainer must be running.
+- For containers to route correctly, Docker should expose or forward ports that the proxy can discover.
+
+
+Advanced requirements:
+*For multi-service devcontainers, configure forwardPorts and portsAttributes:*
+
+```
+  "portsAttributes" : {
+    "9100" : {
+      "label" : "janus"
+    },
+    "1234" : {
+      "label" : "janus-frontend"
+    }
+  },
+```
+
+When a devcontainer needs to reach the host machine, add runArgs such as:
+
+```
+"runArgs": [
+  "--add-host=host.docker.internal:host-gateway",
+  "--add-host=myservice.local.dev-gutools.co.uk:host-gateway"
+]
+```
+
+If a route is missing, inspect the container metadata and verify the port is being forwarded or published correctly.
+

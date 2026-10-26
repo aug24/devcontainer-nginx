@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"html"
 	"log"
+	"os"
+	"path/filepath"
 	"reflect"
 	"sort"
 	"strings"
@@ -338,6 +340,28 @@ func parseDiagnosticsPortsAttributes(doc map[string]any) map[int]string {
 	return out
 }
 
+func loadHelpText(page string) string {
+	candidates := []string{
+		filepath.Join(".", "docs", "help", page+".txt"),
+		filepath.Join("/usr/share/devcontainer-nginx", "docs", "help", page+".txt"),
+	}
+	for _, candidate := range candidates {
+		content, err := os.ReadFile(candidate)
+		if err == nil {
+			return strings.TrimSpace(string(content))
+		}
+	}
+	return ""
+}
+
+func renderHelpSection(page string) string {
+	text := loadHelpText(page)
+	if strings.TrimSpace(text) == "" {
+		return ""
+	}
+	return fmt.Sprintf("<div class=\"help-block\"><h3>How this page works</h3><pre>%s</pre></div>", html.EscapeString(text))
+}
+
 func renderHomepageHTML(rows []ContainerDiagnostic, revision uint64) string {
 	var b strings.Builder
 	b.WriteString("<!doctype html><html><head><meta charset=\"utf-8\"><title>Devcontainer Nginx: Home</title>")
@@ -374,16 +398,19 @@ func renderHomepageHTML(rows []ContainerDiagnostic, revision uint64) string {
 	}
 
 	b.WriteString("</tbody></table>")
-	b.WriteString("<h2>Useful links</h2><ul>")
-	b.WriteString("<li><a href=\"/nginx.conf\">/nginx.conf</a></li>")
-	b.WriteString("<li><a href=\"/generated.conf\">/generated.conf</a></li>")
-	b.WriteString("<li><a href=\"/nginx/config\">/nginx/config</a></li>")
-	b.WriteString("<li><a href=\"/containers\">/containers</a></li>")
+	b.WriteString("<h2>Actions</h2><ul>")
 	b.WriteString("<li><a href=\"/aws-config\">/aws-config</a></li>")
 	b.WriteString("<li><a href=\"/logs\">/logs</a></li>")
 	b.WriteString("<li><a href=\"/tunnels\">/tunnels</a></li>")
 	b.WriteString("<li><a href=\"/shell-command-generator\">/shell-command-generator</a></li>")
 	b.WriteString("</ul>")
+	b.WriteString("<h2>Config</h2><ul>")
+	b.WriteString("<li><a href=\"/nginx.conf\">/nginx.conf</a></li>")
+	b.WriteString("<li><a href=\"/generated.conf\">/generated.conf</a></li>")
+	b.WriteString("<li><a href=\"/nginx/config\">/nginx/config</a></li>")
+	b.WriteString("<li><a href=\"/containers\">/containers</a></li>")
+	b.WriteString("</ul>")
+	b.WriteString(renderHelpSection("homepage"))
 	b.WriteString("<script src=\"/static/app.js\"></script>")
 	b.WriteString("</body></html>")
 	return b.String()
