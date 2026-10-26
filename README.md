@@ -43,6 +43,17 @@ See the [Quick Start Guide](./docs/QUICK-START.md) for the full setup flow.
 
 It is designed to work with the default Docker and Dev Container metadata already present on the machine. In most cases, no app-level labels or per-project configuration are required.
 
+When a devcontainer needs to reach services on the host machine, Docker Desktop/Linux containers often need explicit host aliases such as:
+
+```json
+"runArgs": [
+  "--add-host=host.docker.internal:host-gateway",
+  "--add-host=janus.local.dev-gutools.co.uk:host-gateway"
+]
+```
+
+This is especially important when the devcontainer runs multiple services that need to talk to each other through full HTTPS endpoints on the host machine, rather than only through loopback or local container networking. In those cases, the services inside the devcontainer may need to resolve the host machine by name (for example `janus.local.dev-gutools.co.uk`) or by the standard Docker host alias (`host.docker.internal`) while preserving TLS hostname validation and local-domain routing. The `host-gateway` mapping gives the container a stable route back to the machine running Docker while preserving the local domain used by this proxy.
+
 ## Main features
 
 - Zero-config discovery of Docker and Dev Container apps
