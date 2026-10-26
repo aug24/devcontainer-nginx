@@ -43,6 +43,7 @@ COPY nginx/nginx.conf /etc/nginx/nginx.conf
 COPY entrypoint.sh /entrypoint.sh
 COPY scripts/host-tunnel /usr/local/bin/host-tunnel
 COPY scripts/shell /usr/local/bin/shell
+COPY static /usr/share/devcontainer-nginx/static
 
 # Create required directories
 RUN mkdir -p /etc/nginx/conf.d /etc/nginx/certs /var/log/nginx \

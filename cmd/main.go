@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"html"
 	"log"
 	"net/http"
 	"os"
@@ -189,6 +190,11 @@ func reconcileRoutes(
 
 func startHomepageServer(ctx context.Context, nginxBasePath, generatedConfigPath string, configGen *nginx.ConfigGenerator, homepageState *DiagnosticsState, tunnelManager *TunnelManager, baseDomain *string) {
 	mux := http.NewServeMux()
+	logPath := filepath.Join("/var/log/devcontainer-nginx", "devcontainer-nginx.log")
+	staticDir := "/usr/share/devcontainer-nginx/static"
+	if _, err := os.Stat(staticDir); err != nil {
+		staticDir = filepath.Join(".", "static")
+	}
 
 	writeConfig := func(w http.ResponseWriter, path string) {
 		content, err := os.ReadFile(path)
@@ -233,27 +239,45 @@ func startHomepageServer(ctx context.Context, nginxBasePath, generatedConfigPath
 		)
 	})
 
-	mux.HandleFunc("/logs", tunnelManager.Logs)
-
-	mux.HandleFunc("/homepage/version", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		_, _ = fmt.Fprintf(w, "%d", homepageState.Revision())
-	})
-
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
 		if r.URL.Path != "/" {
 			http.NotFound(w, r)
 			return
 		}
 		rows := homepageState.Snapshot()
 		rows = append(rows, tunnelDiagnostics(tunnelManager, *baseDomain)...)
-
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_, _ = w.Write([]byte(renderHomepageHTML(rows, homepageState.Revision())))
 	})
 
+	mux.HandleFunc("/homepage/version", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		_, _ = fmt.Fprintf(w, "%d", homepageState.Revision())
+	})
+
 	mux.HandleFunc("/containers", func(w http.ResponseWriter, r *http.Request) {
-		names := configGen.ListContainers()
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		rows := homepageState.Snapshot()
+		names := make([]string, 0, len(rows))
+		seen := make(map[string]bool, len(rows))
+		for _, row := range rows {
+			if row.Name == "" || seen[row.Name] {
+				continue
+			}
+			seen[row.Name] = true
+			names = append(names, row.Name)
+		}
 		sort.Strings(names)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_, _ = w.Write([]byte(renderContainersHTML(names)))
@@ -316,7 +340,6 @@ func startHomepageServer(ctx context.Context, nginxBasePath, generatedConfigPath
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(tunnelManager.AWSConfigSnapshot())
-
 		default:
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
@@ -402,6 +425,57 @@ func startHomepageServer(ctx context.Context, nginxBasePath, generatedConfigPath
 		w.WriteHeader(http.StatusNoContent)
 	})
 
+	mux.HandleFunc("/logs", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		count := 50
+		if q := r.URL.Query().Get("count"); q != "" {
+			if parsed, err := strconv.Atoi(q); err == nil && parsed > 0 {
+				count = parsed
+			}
+		}
+		if count > 200 {
+			count = 200
+		}
+
+		data, err := os.ReadFile(logPath)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("failed to read %s: %v", logPath, err), http.StatusInternalServerError)
+			return
+		}
+
+		lines := strings.Split(string(data), "\n")
+		if len(lines) > count {
+			lines = lines[len(lines)-count:]
+		}
+
+		reversed := make([]string, 0, len(lines))
+		for i := len(lines) - 1; i >= 0; i-- {
+			if i >= len(lines) {
+				continue
+			}
+			reversed = append(reversed, lines[i])
+		}
+		out := strings.Join(reversed, "\n")
+		if out != "" {
+			out += "\n"
+		}
+
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(renderLogsPage(out)))
+	})
+
+	mux.HandleFunc("/command-generator", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(renderCommandGeneratorPage()))
+	})
+
 	mux.HandleFunc("/shell-command-generator", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -410,6 +484,9 @@ func startHomepageServer(ctx context.Context, nginxBasePath, generatedConfigPath
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_, _ = w.Write([]byte(renderCommandGeneratorPage()))
 	})
+
+	staticFileServer := http.FileServer(http.Dir(staticDir))
+	mux.Handle("/static/", http.StripPrefix("/static/", staticFileServer))
 
 	server := &http.Server{
 		Addr:              "127.0.0.1:18080",
@@ -514,11 +591,32 @@ func (tunnelManager *TunnelManager) Logs(w http.ResponseWriter, r *http.Request)
 	if len(lines) > count {
 		lines = lines[len(lines)-count:]
 	}
-	out := strings.Join(lines, "\n")
+
+	reversed := make([]string, 0, len(lines))
+	for i := len(lines) - 1; i >= 0; i-- {
+		if i >= len(lines) {
+			continue
+		}
+		reversed = append(reversed, lines[i])
+	}
+	out := strings.Join(reversed, "\n")
 	if out != "" {
 		out += "\n"
 	}
 
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	_, _ = w.Write([]byte(out))
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = w.Write([]byte(renderLogsPage(out)))
+}
+
+func renderLogsPage(logText string) string {
+	var b strings.Builder
+	b.WriteString("<!doctype html><html><head><meta charset=\"utf-8\"><title>Devcontainer Nginx: Logs</title>")
+	b.WriteString(renderStylesheetLink())
+	b.WriteString("</head><body>")
+	b.WriteString(renderPageHeader("Logs"))
+	b.WriteString("<div class=\"log-shell\"><pre>")
+	b.WriteString(html.EscapeString(logText))
+	b.WriteString("</pre></div>")
+	b.WriteString("</body></html>")
+	return b.String()
 }

@@ -205,6 +205,10 @@ This tells the proxy which port to prefer when several ports are exposed.
 
 Each labeled forward port can become a separate route.
 
+When a devcontainer runs multiple services, Docker may expose several ports but not tell the proxy which ones are the meaningful application endpoints. The `forwardPorts` list tells the proxy which ports are intentionally exposed for local access, and `portsAttributes` assigns each port a human-readable label such as `backend` or `frontend`. Without this metadata, a multi-service container can look ambiguous: the proxy may only pick one port, choose the wrong port, or skip the container entirely.
+
+This is especially useful for devcontainers that host separate web apps or APIs behind one container, where each service needs its own hostname and TLS route on the host machine rather than a single shared endpoint.
+
 ## HTTPS upstream verification
 
 When a tunnel uses an HTTPS upstream, the generated Nginx route can be configured to validate the upstream certificate.
@@ -224,3 +228,34 @@ https://devcontainer-nginx.<base-domain>/health
 ```
 
 The app also provides a Docker health check that confirms Nginx is serving traffic.
+
+````
+This is the description of what the code block changes:
+<changeDescription>
+Explain why a devcontainer's forwardPorts/portsAttributes block is needed for multi-service containers so each host service can get its own route and label.
+</changeDescription>
+
+This is the code block that represents the suggested code change:
+````markdown
+### portsAttributes (Dev Containers)
+
+```json
+{
+  "forwardPorts": [9100, 1234],
+  "portsAttributes": {
+    "9100": { "label": "backend" },
+    "1234": { "label": "frontend" }
+  }
+}
+```
+
+Each labeled forward port can become a separate route.
+
+When a devcontainer runs multiple services, Docker may expose several ports but not tell the proxy which ones are the meaningful application endpoints. The `forwardPorts` list tells the proxy which ports are intentionally exposed for local access, and `portsAttributes` assigns each port a human-readable label such as `backend` or `frontend`. Without this metadata, a multi-service container can look ambiguous: the proxy may only pick one port, choose the wrong port, or skip the container entirely.
+
+This is especially useful for devcontainers that host separate web apps or APIs behind one container, where each service needs its own hostname and TLS route on the host machine rather than a single shared endpoint.
+
+````
+<userPrompt>
+Provide the fully rewritten file, incorporating the suggested code change. You must produce the complete file.
+</userPrompt>
