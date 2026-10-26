@@ -179,6 +179,10 @@ label {
   color: var(--danger);
 }
 
+.status-stopped {
+  color: var(--skip);
+}
+
 .status-pending {
   color: var(--warn);
 }

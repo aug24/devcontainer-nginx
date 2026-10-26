@@ -14,9 +14,10 @@ func renderAWSConfigPage(cfg AWSConfig) string {
 	b.WriteString(renderPageHeader("AWS Config"))
 	b.WriteString("<p>Paste the exact shell command(s) to run in the current container user. This is the source of truth; profile and region are supplied inside the command itself.</p>")
 	b.WriteString("<p><a href=\"/command-generator\">Open command generator</a> | <a href=\"/tunnels\">Open tunnel page</a></p>")
-	b.WriteString("<form id=\"aws-form\">")
+	b.WriteString("<div class=\"form-actions\"><button type=\"button\" id=\"paste-and-save-button\">Paste and Save</button></div>")
+	b.WriteString("<form id=\"aws-form\" method=\"post\" action=\"/aws-config\">")
 	b.WriteString("<label>Credential bootstrap commands</label><textarea name=\"bootstrapCommand\">" + html.EscapeString(cfg.BootstrapCommand) + "</textarea>")
-	b.WriteString("<div class=\"form-actions\"><button type=\"submit\">Save AWS config</button><a href=\"/tunnels\" class=\"inline-link\">Open tunnel page</a></div>")
+	b.WriteString("<div class=\"form-actions\"><button type=\"submit\">Save</button></div>")
 	b.WriteString("</form>")
 	b.WriteString("<pre class=\"aws-output\">" + html.EscapeString(cfg.Output) + "</pre>")
 	b.WriteString("<div class=\"aws-exit-status\">Exit code: " + html.EscapeString(fmt.Sprintf("%d", cfg.ExitCode)) + "</div>")
@@ -53,7 +54,12 @@ func renderTunnelPage(cfg AWSConfig, tunnels []TunnelEntry) string {
 				statusClass = "status-ok"
 			case "failed":
 				statusClass = "status-failed"
+			case "stopped":
+				statusClass = "status-stopped"
+			case "starting", "pending", "stopping":
+				statusClass = "status-pending"
 			}
+
 			b.WriteString("<tr>")
 			b.WriteString("<td>" + html.EscapeString(tunnel.ID) + "</td>")
 			b.WriteString("<td>" + html.EscapeString(tunnel.Alias) + "</td>")
@@ -62,8 +68,14 @@ func renderTunnelPage(cfg AWSConfig, tunnels []TunnelEntry) string {
 			b.WriteString("<td>" + html.EscapeString(tunnel.LocalEndpoint) + "</td>")
 			b.WriteString("<td class=\"" + statusClass + "\">" + html.EscapeString(tunnel.Status) + "</td>")
 			b.WriteString("<td>" + html.EscapeString(tunnel.LastOutput) + "</td>")
-			b.WriteString("<td><button data-delete=\"" + html.EscapeString(tunnel.ID) + "\">Delete</button>")
-			b.WriteString(" <button data-stop=\"" + html.EscapeString(tunnel.ID) + "\">Stop</button></td>")
+			b.WriteString("<td>")
+			if tunnel.Status == "running" {
+				b.WriteString("<button data-stop=\"" + html.EscapeString(tunnel.ID) + "\">Stop</button>")
+			} else {
+				b.WriteString("<button data-start=\"" + html.EscapeString(tunnel.ID) + "\">Start</button>")
+			}
+			b.WriteString(" <button data-delete=\"" + html.EscapeString(tunnel.ID) + "\">Delete</button>")
+			b.WriteString("</td>")
 			b.WriteString("</tr>")
 		}
 	}

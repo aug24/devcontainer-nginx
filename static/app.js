@@ -65,21 +65,21 @@
 
   function setupAWSConfig() {
     const form = document.getElementById('aws-form');
+    const pasteButton = document.getElementById('paste-and-save-button');
     if (!form) {
       return;
     }
 
-    form.addEventListener('submit', async (event) => {
-      event.preventDefault();
-      const formData = new FormData(event.target);
-      const payload = {
+    async function submitForm() {
+      const formData = new FormData(form);
+      const payload = new URLSearchParams({
         bootstrapCommand: (formData.get('bootstrapCommand') || '').toString(),
-      };
+      });
 
-      const response = await fetch('/api/aws-config', {
+      const response = await fetch('/aws-config', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
+        body: payload,
       });
 
       if (!response.ok) {
@@ -87,8 +87,28 @@
         return;
       }
 
-      location.reload();
+      window.location.href = '/aws-config';
+    }
+
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      await submitForm();
     });
+
+    if (pasteButton) {
+      pasteButton.addEventListener('click', async () => {
+        try {
+          const text = await navigator.clipboard.readText();
+          const textarea = form.querySelector('textarea[name="bootstrapCommand"]');
+          if (textarea) {
+            textarea.value = text;
+          }
+          await submitForm();
+        } catch (_error) {
+          alert('Unable to read clipboard contents.');
+        }
+      });
+    }
   }
 
   function setupTunnelPage() {
@@ -128,6 +148,22 @@
       button.addEventListener('click', async function () {
         const id = this.getAttribute('data-delete');
         const response = await fetch('/api/tunnels/' + encodeURIComponent(id), { method: 'DELETE' });
+        if (!response.ok) {
+          alert((await response.text()) || 'failed');
+          return;
+        }
+
+        location.reload();
+      });
+    });
+
+    document.querySelectorAll('[data-start]').forEach((button) => {
+      button.addEventListener('click', async function () {
+        const id = this.getAttribute('data-start');
+        const response = await fetch('/api/tunnels/start/' + encodeURIComponent(id), {
+          method: 'POST',
+        });
+
         if (!response.ok) {
           alert((await response.text()) || 'failed');
           return;
@@ -261,4 +297,3 @@
     }
   });
 })();
-

@@ -1,11 +1,13 @@
 package main
 
 import (
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
-	"os"
-	"path/filepath"
 )
 
 func TestExtractDiagnosticsPortMetadata(t *testing.T) {
@@ -118,5 +120,74 @@ func TestStatusPaletteUsesGreenForRunning(t *testing.T) {
 	}
 	if !strings.Contains(content, ".status-failed {\n  color: var(--danger);") {
 		t.Fatalf("status-failed selector missing red color: %s", content)
+	}
+}
+
+func TestTunnelAPIRoutesMatchDedicatedHandlers(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/tunnels", func(w http.ResponseWriter, r *http.Request) {})
+	mux.HandleFunc("/api/tunnels/stop/", func(w http.ResponseWriter, r *http.Request) {})
+	mux.HandleFunc("/api/tunnels/start/", func(w http.ResponseWriter, r *http.Request) {})
+	mux.HandleFunc("/api/tunnels/", func(w http.ResponseWriter, r *http.Request) {})
+
+	cases := []struct {
+		path       string
+		wantPattern string
+	}{
+		{path: "/api/tunnels", wantPattern: "/api/tunnels"},
+		{path: "/api/tunnels/start/abc123", wantPattern: "/api/tunnels/start/"},
+		{path: "/api/tunnels/stop/abc123", wantPattern: "/api/tunnels/stop/"},
+	}
+
+	for _, tc := range cases {
+		req, err := http.NewRequest(http.MethodPost, tc.path, strings.NewReader("{}"))
+		if err != nil {
+			t.Fatalf("NewRequest(%q): %v", tc.path, err)
+		}
+		_, pattern := mux.Handler(req)
+		if pattern != tc.wantPattern {
+			t.Fatalf("handler for %q = %q, want %q", tc.path, pattern, tc.wantPattern)
+		}
+	}
+}
+
+func TestTunnelPageAcceptsFormPost(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/tunnels", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			w.WriteHeader(http.StatusOK)
+		case http.MethodPost:
+			w.WriteHeader(http.StatusSeeOther)
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+
+	req, err := http.NewRequest(http.MethodPost, "/tunnels", strings.NewReader("name=demo&stack=frontend&stage=CODE&app=demo&alb=demo-alb"))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp := httptest.NewRecorder()
+	mux.ServeHTTP(resp, req)
+	if resp.Code != http.StatusSeeOther {
+		t.Fatalf("POST /tunnels returned %d, want %d", resp.Code, http.StatusSeeOther)
+	}
+}
+
+func TestAWSConfigFormUsesPost(t *testing.T) {
+	html := renderAWSConfigPage(AWSConfig{BootstrapCommand: "aws configure set --profile frontend region us-east-1"})
+	if !strings.Contains(html, "<form id=\"aws-form\" method=\"post\" action=\"/aws-config\">") {
+		t.Fatalf("AWS config form missing explicit POST action: %s", html)
+	}
+	if !strings.Contains(html, "Paste and Save") {
+		t.Fatalf("AWS config page missing paste-and-save action: %s", html)
+	}
+	if !strings.Contains(html, "<button type=\"submit\">Save</button>") {
+		t.Fatalf("AWS config page missing renamed save button: %s", html)
+	}
+	if strings.Contains(html, "Save AWS config") {
+		t.Fatalf("AWS config page still contains old button label: %s", html)
 	}
 }

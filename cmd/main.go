@@ -303,17 +303,16 @@ func startHomepageServer(ctx context.Context, nginxBasePath, generatedConfigPath
 		}
 		if r.Method == http.MethodPost {
 			defer r.Body.Close()
-			var cfg AWSConfig
-			if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
-				http.Error(w, "invalid json: "+err.Error(), http.StatusBadRequest)
+			cfg, err := parseAWSConfigRequest(r)
+			if err != nil {
+				http.Error(w, "invalid request: "+err.Error(), http.StatusBadRequest)
 				return
 			}
 			if err := tunnelManager.SetAWSConfig(cfg); err != nil {
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(tunnelManager.AWSConfigSnapshot())
+			http.Redirect(w, r, "/aws-config", http.StatusSeeOther)
 			return
 		}
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -326,9 +325,9 @@ func startHomepageServer(ctx context.Context, nginxBasePath, generatedConfigPath
 			_ = json.NewEncoder(w).Encode(tunnelManager.AWSConfigSnapshot())
 		case http.MethodPost:
 			defer r.Body.Close()
-			var cfg AWSConfig
-			if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
-				http.Error(w, "invalid json: "+err.Error(), http.StatusBadRequest)
+			cfg, err := parseAWSConfigRequest(r)
+			if err != nil {
+				http.Error(w, "invalid request: "+err.Error(), http.StatusBadRequest)
 				return
 			}
 			if err := tunnelManager.SetAWSConfig(cfg); err != nil {
@@ -343,12 +342,55 @@ func startHomepageServer(ctx context.Context, nginxBasePath, generatedConfigPath
 	})
 
 	mux.HandleFunc("/tunnels", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
+		switch r.Method {
+		case http.MethodGet:
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = w.Write([]byte(renderTunnelPage(tunnelManager.AWSConfigSnapshot(), tunnelManager.Snapshot())))
+		case http.MethodPost:
+			defer r.Body.Close()
+			var request TunnelRequest
+			if strings.Contains(r.Header.Get("Content-Type"), "application/json") {
+				if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+					http.Error(w, "invalid json: "+err.Error(), http.StatusBadRequest)
+					return
+				}
+			} else {
+				if err := r.ParseForm(); err != nil {
+					http.Error(w, "invalid form: "+err.Error(), http.StatusBadRequest)
+					return
+				}
+				request = TunnelRequest{
+					Name:             r.FormValue("name"),
+					Profile:          r.FormValue("profile"),
+					Region:           r.FormValue("region"),
+					Stack:            r.FormValue("stack"),
+					Stage:            r.FormValue("stage"),
+					App:              r.FormValue("app"),
+					Alb:              r.FormValue("alb"),
+					UpstreamProtocol: func() string { if r.FormValue("https") == "on" { return "https" }; return "http" }(),
+					VerifySSL:        r.FormValue("verifySSL") == "on",
+				}
+			}
+			if strings.TrimSpace(request.Profile) == "" {
+				request.Profile = tunnelManager.AWSConfigSnapshot().Profile
+			}
+			if strings.TrimSpace(request.Region) == "" {
+				request.Region = tunnelManager.AWSConfigSnapshot().Region
+			}
+			entry, err := tunnelManager.Create(request)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			if err := tunnelManager.Start(entry.ID); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			tunnelManager.EnsureConfig(*baseDomain, configGen)
+			http.Redirect(w, r, "/tunnels", http.StatusSeeOther)
+		default:
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
 		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = w.Write([]byte(renderTunnelPage(tunnelManager.AWSConfigSnapshot(), tunnelManager.Snapshot())))
 	})
 
 	mux.HandleFunc("/api/tunnels", func(w http.ResponseWriter, r *http.Request) {
@@ -397,6 +439,24 @@ func startHomepageServer(ctx context.Context, nginxBasePath, generatedConfigPath
 			return
 		}
 		if err := tunnelManager.Stop(id); err != nil {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		tunnelManager.EnsureConfig(*baseDomain, configGen)
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	mux.HandleFunc("/api/tunnels/start/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		id := strings.TrimPrefix(r.URL.Path, "/api/tunnels/start/")
+		if id == "" {
+			http.Error(w, "missing tunnel id", http.StatusBadRequest)
+			return
+		}
+		if err := tunnelManager.Start(id); err != nil {
 			http.Error(w, err.Error(), http.StatusNotFound)
 			return
 		}
@@ -630,3 +690,23 @@ func resolveStaticDir() string {
 	}
 	return candidates[len(candidates)-1]
 }
+
+func parseAWSConfigRequest(r *http.Request) (AWSConfig, error) {
+	if r == nil {
+		return AWSConfig{}, fmt.Errorf("request is nil")
+	}
+	if strings.Contains(r.Header.Get("Content-Type"), "application/json") {
+		var cfg AWSConfig
+		if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
+			return AWSConfig{}, err
+		}
+		return cfg, nil
+	}
+	if err := r.ParseForm(); err != nil {
+		return AWSConfig{}, err
+	}
+	return AWSConfig{
+		BootstrapCommand: r.FormValue("bootstrapCommand"),
+	}, nil
+}
+

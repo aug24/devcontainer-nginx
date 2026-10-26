@@ -141,7 +141,7 @@ func (tm *TunnelManager) SetAWSConfig(cfg AWSConfig) error {
 	if strings.TrimSpace(cfg.Region) == "" {
 		cfg.Region = "us-east-1"
 	}
-	cfg.BootstrapCommand = strings.TrimSpace(cfg.BootstrapCommand)
+	cfg.BootstrapCommand = normalizeBootstrapCommand(cfg.BootstrapCommand)
 	cfg.Output = strings.TrimSpace(cfg.Output)
 	cfg.ExitCode = 0
 	if cfg.BootstrapCommand == "" {
@@ -193,6 +193,12 @@ func (tm *TunnelManager) SetAWSConfig(cfg AWSConfig) error {
 	}
 	tm.config = cfg
 	return nil
+}
+
+func normalizeBootstrapCommand(value string) string {
+	value = strings.ReplaceAll(value, "\r\n", "\n")
+	value = strings.ReplaceAll(value, "\r", "\n")
+	return strings.TrimSpace(value)
 }
 
 func (tm *TunnelManager) AWSConfigSnapshot() AWSConfig {
