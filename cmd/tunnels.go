@@ -9,8 +9,10 @@ import (
 	"os"
 	"os/exec"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/dev-tools/devcontainer-nginx/internal/nginx"
@@ -295,7 +297,7 @@ func (tm *TunnelManager) Remove(id string) bool {
 	}
 	if cmd, ok := tm.process[id]; ok {
 		if cmd.Process != nil {
-			_ = cmd.Process.Kill()
+			killProcessTree(cmd.Process.Pid)
 		}
 		delete(tm.process, id)
 	}
@@ -316,20 +318,114 @@ func (tm *TunnelManager) Stop(id string) error {
 		return fmt.Errorf("tunnel %s not found", id)
 	}
 	entry.Status = "stopping"
-	if cmd.Process != nil {
-		if err := cmd.Process.Signal(os.Interrupt); err != nil {
-			_ = cmd.Process.Kill()
-		}
-	}
-	delete(tm.process, id)
+	entry.LastOutput = "stopping tunnel..."
 	tm.mu.Unlock()
 
-	if entry != nil {
-		entry.Status = "stopped"
-		entry.LastOutput = "tunnel stopped by user"
+	if cmd != nil && cmd.Process != nil {
+		killProcessTree(cmd.Process.Pid)
 	}
 
+	tm.mu.Lock()
+	if current, ok := tm.tunnels[id]; ok {
+		current.Status = "stopped"
+		current.LastOutput = "tunnel stopped by user"
+		delete(tm.process, id)
+	}
+	tm.mu.Unlock()
+
 	return nil
+}
+
+func childrenOfPID(pid int) ([]int, error) {
+	output, err := exec.Command("ps", "-eo", "pid=,ppid=").Output()
+	if err != nil {
+		return nil, err
+	}
+
+	var children []int
+	for _, line := range strings.Split(string(output), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 2 {
+			continue
+		}
+		childPID, err := strconv.Atoi(fields[0])
+		if err != nil {
+			continue
+		}
+		parentPID, err := strconv.Atoi(fields[1])
+		if err != nil {
+			continue
+		}
+		if parentPID == pid {
+			children = append(children, childPID)
+		}
+	}
+	return children, nil
+}
+
+func killProcessTree(pid int) {
+	if pid <= 0 {
+		return
+	}
+
+	seen := map[int]bool{pid: true}
+	stack := []int{pid}
+	for len(stack) > 0 {
+		current := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		children, err := childrenOfPID(current)
+		if err != nil {
+			continue
+		}
+		for _, childPID := range children {
+			if !seen[childPID] {
+				seen[childPID] = true
+				stack = append(stack, childPID)
+			}
+		}
+	}
+
+	for processPID := range seen {
+		if processPID == pid {
+			_ = syscall.Kill(-pid, syscall.SIGTERM)
+		}
+		_ = syscall.Kill(processPID, syscall.SIGTERM)
+	}
+
+	time.Sleep(200 * time.Millisecond)
+
+	for processPID := range seen {
+		if processPID == pid {
+			_ = syscall.Kill(-pid, syscall.SIGKILL)
+		}
+		if err := syscall.Kill(processPID, 0); err != nil && errors.Is(err, syscall.ESRCH) {
+			continue
+		}
+		_ = syscall.Kill(processPID, syscall.SIGKILL)
+	}
+}
+
+func (tm *TunnelManager) stopProcessByID(id string) {
+	tm.mu.Lock()
+	cmd, ok := tm.process[id]
+	tm.mu.Unlock()
+	if !ok || cmd == nil || cmd.Process == nil {
+		return
+	}
+
+	killProcessTree(cmd.Process.Pid)
+
+	tm.mu.Lock()
+	if current, exists := tm.process[id]; exists && current == cmd {
+		delete(tm.process, id)
+	}
+	tm.mu.Unlock()
+}
+
+func (tm *TunnelManager) markTunnelExit(id string, cmd *exec.Cmd, err error) {
+	_ = id
+	_ = cmd
+	_ = err
 }
 
 func (tm *TunnelManager) Create(request TunnelRequest) (*TunnelEntry, error) {
@@ -443,6 +539,7 @@ func (tm *TunnelManager) Start(id string) error {
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	cmd.Env = os.Environ()
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	if err := cmd.Start(); err != nil {
 		log.Printf("Tunnel start failed: id=%s name=%q error=%v", id, entry.Name, err)
@@ -455,7 +552,17 @@ func (tm *TunnelManager) Start(id string) error {
 
 	go func() {
 		err := cmd.Wait()
-		if err == nil {
+		tm.mu.Lock()
+		current, ok := tm.tunnels[id]
+		if !ok {
+			tm.mu.Unlock()
+			return
+		}
+		if current.Status == "stopping" || current.Status == "stopped" {
+			delete(tm.process, id)
+			current.Status = "stopped"
+			current.LastOutput = "tunnel stopped by user"
+			tm.mu.Unlock()
 			return
 		}
 		output := strings.TrimSpace(stdout.String() + "\n" + stderr.String())
@@ -463,11 +570,9 @@ func (tm *TunnelManager) Start(id string) error {
 			output = err.Error()
 		}
 		log.Printf("Tunnel exited: id=%s name=%q error=%v output=%q", id, entry.Name, err, output)
-		tm.mu.Lock()
-		if current, ok := tm.tunnels[id]; ok {
-			current.Status = "failed"
-			current.LastOutput = output
-		}
+		delete(tm.process, id)
+		current.Status = "failed"
+		current.LastOutput = output
 		tm.mu.Unlock()
 	}()
 
