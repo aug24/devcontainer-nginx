@@ -102,4 +102,3 @@ func renderCommandGeneratorPage() string {
 	b.WriteString("</body></html>")
 	return b.String()
 }
-

@@ -11,6 +11,12 @@ docker build -t devcontainer-nginx:local .
 docker compose up -d --build
 ```
 
+For development, consider:
+```
+docker compose up -d --build --force-recreate devcontainer-nginx
+```
+which can be run repeatedly to rebuild the proxy container and reload its configuration in one step.
+
 Then start any app container, for example:
 
 ```bash

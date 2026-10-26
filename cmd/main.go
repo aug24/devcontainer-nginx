@@ -191,10 +191,7 @@ func reconcileRoutes(
 func startHomepageServer(ctx context.Context, nginxBasePath, generatedConfigPath string, configGen *nginx.ConfigGenerator, homepageState *DiagnosticsState, tunnelManager *TunnelManager, baseDomain *string) {
 	mux := http.NewServeMux()
 	logPath := filepath.Join("/var/log/devcontainer-nginx", "devcontainer-nginx.log")
-	staticDir := "/usr/share/devcontainer-nginx/static"
-	if _, err := os.Stat(staticDir); err != nil {
-		staticDir = filepath.Join(".", "static")
-	}
+	staticDir := resolveStaticDir()
 
 	writeConfig := func(w http.ResponseWriter, path string) {
 		content, err := os.ReadFile(path)
@@ -619,4 +616,17 @@ func renderLogsPage(logText string) string {
 	b.WriteString("</pre></div>")
 	b.WriteString("</body></html>")
 	return b.String()
+}
+
+func resolveStaticDir() string {
+	candidates := []string{
+		filepath.Join(".", "static"),
+		"/usr/share/devcontainer-nginx/static",
+	}
+	for _, candidate := range candidates {
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+	}
+	return candidates[len(candidates)-1]
 }

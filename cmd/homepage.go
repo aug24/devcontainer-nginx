@@ -353,7 +353,7 @@ func renderHomepageHTML(rows []ContainerDiagnostic, revision uint64) string {
 		for _, row := range rows {
 			statusClass := "skip"
 			switch row.Status {
-			case "routed":
+			case "routed", "running":
 				statusClass = "ok"
 			case "partial":
 				statusClass = "partial"

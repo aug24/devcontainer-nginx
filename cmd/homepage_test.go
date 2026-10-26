@@ -4,6 +4,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"os"
+	"path/filepath"
 )
 
 func TestExtractDiagnosticsPortMetadata(t *testing.T) {
@@ -97,5 +99,24 @@ func TestRenderHomepageHTMLUsesSharedStaticAssets(t *testing.T) {
 	}
 	if strings.Contains(html, "<script>") {
 		t.Fatalf("homepage HTML still contains inline scripts")
+	}
+}
+
+func TestStatusPaletteUsesGreenForRunning(t *testing.T) {
+	cssPath := filepath.Join("..", "static", "styles.css")
+	css, err := os.ReadFile(cssPath)
+	if err != nil {
+		t.Fatalf("read css: %v", err)
+	}
+	content := string(css)
+
+	if !strings.Contains(content, "--ok-dark: #085a39;") {
+		t.Fatalf("running green palette missing from stylesheet: %s", content)
+	}
+	if !strings.Contains(content, ".status-ok {\n  color: var(--ok-dark);") {
+		t.Fatalf("status-ok selector missing darker green color: %s", content)
+	}
+	if !strings.Contains(content, ".status-failed {\n  color: var(--danger);") {
+		t.Fatalf("status-failed selector missing red color: %s", content)
 	}
 }
