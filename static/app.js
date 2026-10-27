@@ -292,7 +292,48 @@
     render();
   }
 
+  function setupRegionControls() {
+    const controls = document.querySelectorAll('.region-control');
+    if (!controls.length) {
+      return;
+    }
+
+    const predefined = new Set(['eu-west-1', 'us-east-1', 'us-east-2', 'eu-west-2', 'us-west-2']);
+
+    controls.forEach((control) => {
+      const select = control.querySelector('.region-select');
+      const input = control.querySelector('.region-input');
+      if (!select || !input) {
+        return;
+      }
+
+      const syncSelectFromInput = () => {
+        const value = (input.value || '').trim();
+        if (!value) {
+          select.value = 'eu-west-1';
+          return;
+        }
+        select.value = predefined.has(value) ? value : 'custom';
+      };
+
+      const syncInputFromSelect = () => {
+        const value = select.value;
+        if (value === 'custom') {
+          return;
+        }
+        input.value = value;
+      };
+
+      input.addEventListener('input', syncSelectFromInput);
+      input.addEventListener('change', syncSelectFromInput);
+      select.addEventListener('change', syncInputFromSelect);
+      syncSelectFromInput();
+    });
+  }
+
   document.addEventListener('DOMContentLoaded', () => {
+    setupRegionControls();
+
     const page = document.body.dataset.page;
 
     if (page === 'homepage') {

@@ -15,7 +15,6 @@ func renderAWSConfigPage(cfg AWSConfig) string {
 	b.WriteString("</head><body data-page=\"aws-config\">")
 	b.WriteString(renderPageHeader("AWS Config"))
 	b.WriteString("<p>Paste the exact shell command(s) to run in the current container user. This is the source of truth; profile and region are supplied inside the command itself.</p>")
-	b.WriteString("<p><a href=\"/command-generator\">Open command generator</a> | <a href=\"/tunnels\">Open tunnel page</a></p>")
 	b.WriteString("<div class=\"form-actions\"><button type=\"button\" id=\"paste-and-save-button\">Paste and Save</button></div>")
 	b.WriteString("<form id=\"aws-form\" method=\"post\" action=\"/aws-config\">")
 	b.WriteString("<label>Credential bootstrap commands</label><textarea name=\"bootstrapCommand\">" + html.EscapeString(cfg.BootstrapCommand) + "</textarea>")
@@ -36,18 +35,16 @@ func renderTunnelPage(cfg AWSConfig, tunnels []TunnelEntry) string {
 	b.WriteString(renderFaviconLink())
 	b.WriteString("</head><body data-page=\"tunnel-page\">")
 	b.WriteString(renderPageHeader("Tunnels"))
-	b.WriteString("<p><a href=\"/aws-config\">AWS config</a> | <a href=\"/command-generator\">Command generator</a></p>")
 	b.WriteString("<form id=\"tunnel-form\" method=\"post\">")
-	b.WriteString("<div class=\"row\"><div><label>Name</label><input name=\"name\" placeholder=\"myapp\" /></div><div><label>Profile</label><input name=\"profile\" placeholder=\"frontend\" /></div><div><label>Region</label><input name=\"region\" placeholder=\"us-east-1\" list=\"region-options\" /></div></div>")
+	b.WriteString("<div class=\"row\"><div><label>Name</label><input name=\"name\" placeholder=\"myapp\" /></div><div><label>Profile</label>" + renderProfileSelect("profile", cfg.Profile) + "</div><div><label>Region</label>" + renderRegionSelect("region", cfg.Region) + "</div></div>")
 	b.WriteString("<div class=\"row form-row-spaced\"><div><label>Stack</label><input name=\"stack\" placeholder=\"frontend\" /></div><div><label>Stage</label><input name=\"stage\" placeholder=\"CODE\" list=\"stage-options\" /></div><div><label>App</label><input name=\"app\" placeholder=\"frontend\" /></div></div>")
 	b.WriteString("<div class=\"row form-row-spaced\"><div><label>ALB</label><input name=\"alb\" placeholder=\"myapp-alb\" /></div></div>")
 	b.WriteString("<div class=\"checkbox-row form-row-spaced\"><label><input type=\"checkbox\" name=\"https\" checked /> Use HTTPS upstream</label><label><input type=\"checkbox\" name=\"verifySSL\" checked /> Respect upstream SSL certificate</label></div>")
 	b.WriteString("<datalist id=\"stage-options\"><option value=\"CODE\"></option><option value=\"PROD\"></option><option value=\"INFRA\"></option></datalist>")
-	b.WriteString("<datalist id=\"region-options\"><option value=\"us-east-1\"></option><option value=\"eu-west-1\"></option><option value=\"us-east-2\"></option></datalist>")
 	b.WriteString("<div><button type=\"submit\">Create tunnel</button></div>")
 	b.WriteString("</form>")
 	b.WriteString("<h2>Existing tunnels</h2>")
-	b.WriteString("<table><thead><tr><th>ID</th><th>Name</th><th>Profile</th><th>Region</th><th>Local</th><th>Status</th><th>Output</th><th>Actions</th></tr></thead><tbody>")
+	b.WriteString("<div class=\"table-wrap\"><table><thead><tr><th style=\"width: 7%;\">ID</th><th style=\"width: 12%;\">Name</th><th style=\"width: 10%;\">Profile</th><th style=\"width: 10%;\">Region</th><th style=\"width: 14%;\">Local</th><th style=\"width: 8%;\">Status</th><th style=\"width: 24%;\">Output</th><th style=\"width: 15%;\">Actions</th></tr></thead><tbody>")
 	if len(tunnels) == 0 {
 		b.WriteString("<tr><td colspan=\"8\">No tunnels configured yet.</td></tr>")
 	} else {
@@ -71,8 +68,8 @@ func renderTunnelPage(cfg AWSConfig, tunnels []TunnelEntry) string {
 			b.WriteString("<td>" + html.EscapeString(tunnel.Region) + "</td>")
 			b.WriteString("<td>" + html.EscapeString(tunnel.LocalEndpoint) + "</td>")
 			b.WriteString("<td class=\"" + statusClass + "\">" + html.EscapeString(tunnel.Status) + "</td>")
-			b.WriteString("<td>" + html.EscapeString(tunnel.LastOutput) + "</td>")
-			b.WriteString("<td>")
+			b.WriteString("<td class=\"table-output\">" + html.EscapeString(tunnel.LastOutput) + "</td>")
+			b.WriteString("<td class=\"table-actions\">")
 			if tunnel.Status == "running" {
 				b.WriteString("<button data-stop=\"" + html.EscapeString(tunnel.ID) + "\">Stop</button>")
 			} else {
@@ -83,7 +80,7 @@ func renderTunnelPage(cfg AWSConfig, tunnels []TunnelEntry) string {
 			b.WriteString("</tr>")
 		}
 	}
-	b.WriteString("</tbody></table>")
+	b.WriteString("</tbody></table></div>")
 	b.WriteString(renderHelpSection("tunnels"))
 	b.WriteString("<script src=\"/static/app.js\"></script>")
 	b.WriteString("</body></html>")
@@ -103,8 +100,8 @@ func renderCommandGeneratorPage() string {
 	b.WriteString("<div class=\"row\"><div><label>Container</label><input name=\"container\" value=\"devcontainer-nginx\" /></div>")
 	b.WriteString("<div><label>Run as</label><select name=\"user\"><option value=\"root\" selected>root</option><option value=\"current\">current user</option></select></div>")
 	b.WriteString("<div><label>Command</label><select name=\"command\"><option value=\"shell\" selected>shell</option><option value=\"bash\">bash</option><option value=\"host-tunnel\">host-tunnel</option></select></div>")
-	b.WriteString("<div><label>Profile</label><input name=\"profile\" value=\"\" placeholder=\"frontend\" /></div>")
-	b.WriteString("<div><label>Region</label><input name=\"region\" value=\"\" placeholder=\"eu-west-1\" /></div>")
+	b.WriteString("<div><label>Profile</label>" + renderProfileSelect("profile", "") + "</div>")
+	b.WriteString("<div><label>Region</label>" + renderRegionSelect("region", "eu-west-1") + "</div>")
 	b.WriteString("</div>")
 	b.WriteString("<div class=\"row command-secondary-row\"><div class=\"command-field\"><label>App</label><input name=\"app\" value=\"\" placeholder=\"socks-proxy\" data-command-secondary /></div>")
 	b.WriteString("<div class=\"command-field\"><label>Stack</label><input name=\"stack\" value=\"\" placeholder=\"frontend\" data-command-secondary /></div>")
@@ -119,24 +116,6 @@ func renderCommandGeneratorPage() string {
 	b.WriteString("<h2>Command</h2>")
 	b.WriteString("<pre id=\"generated-command\" class=\"command-box\"></pre>")
 	b.WriteString(renderHelpSection("command-generator"))
-	b.WriteString("<script src=\"/static/app.js\"></script>")
-	b.WriteString("</body></html>")
-	return b.String()
-}
-
-func renderShellLaunchPage() string {
-	var b strings.Builder
-	b.WriteString("<!doctype html><html><head><meta charset=\"utf-8\"><title>Devcontainer Nginx: Open Shell</title>")
-	b.WriteString(renderStylesheetLink())
-	b.WriteString(renderFaviconLink())
-	b.WriteString("</head><body data-page=\"shell-launch\">")
-	b.WriteString(renderPageHeader("Open Shell"))
-	b.WriteString("<p class=\"muted\">Open a shell inside the devcontainer-nginx container with AWS environment variables pre-set.</p>")
-	b.WriteString("<form id=\"shell-launch-form\" action=\"/shell\" method=\"get\" target=\"_blank\">")
-	b.WriteString("<div class=\"row\"><div><label>Profile</label><input name=\"profile\" value=\"\" placeholder=\"frontend\" required /></div>")
-	b.WriteString("<div><label>Region</label><input name=\"region\" value=\"\" placeholder=\"eu-west-1\" required /></div></div>")
-	b.WriteString("<div class=\"command-actions\"><button type=\"submit\">Open shell in new tab</button></div>")
-	b.WriteString("</form>")
 	b.WriteString("<script src=\"/static/app.js\"></script>")
 	b.WriteString("</body></html>")
 	return b.String()
@@ -173,6 +152,133 @@ func renderShellPage(profile, region string) string {
 	b.WriteString("socket.addEventListener('close', () => { term.write('\\r\\nConnection closed.'); });")
 	b.WriteString("socket.addEventListener('error', () => { term.write('\\r\\nConnection error.'); });")
 	b.WriteString("</script>")
+	b.WriteString("</body></html>")
+	return b.String()
+}
+
+func renderProfileOptions(selected string, profiles []string) string {
+	var b strings.Builder
+	if len(profiles) == 0 {
+		b.WriteString("<option value=\"\" selected>No valid AWS profiles found</option>")
+		return b.String()
+	}
+
+	selectedFound := false
+	for _, profile := range profiles {
+		if profile == selected {
+			selectedFound = true
+			break
+		}
+	}
+	if !selectedFound && selected != "" {
+		profiles = append([]string{selected}, profiles...)
+	}
+
+	for _, profile := range profiles {
+		if profile == "" {
+			continue
+		}
+		b.WriteString("<option value=\"" + html.EscapeString(profile) + "\"")
+		if profile == selected {
+			b.WriteString(" selected")
+		}
+		b.WriteString(">" + html.EscapeString(profile) + "</option>")
+	}
+	return b.String()
+}
+
+func renderProfileSelect(name, value string) string {
+	profiles := KnownGoodAWSProfiles()
+	if len(profiles) == 0 {
+		profiles = RefreshAWSProfiles()
+	}
+	var b strings.Builder
+	b.WriteString("<select name=\"" + html.EscapeString(name) + "\">")
+	if len(profiles) == 0 {
+		b.WriteString("<option value=\"\" selected>No valid AWS profiles found</option>")
+		b.WriteString("</select>")
+		return b.String()
+	}
+	if value == "" {
+		b.WriteString("<option value=\"\" selected>Select profile</option>")
+	}
+	b.WriteString(renderProfileOptions(value, profiles))
+	b.WriteString("</select>")
+	return b.String()
+}
+
+func renderRegionField(name, value string) string {
+	selected := strings.TrimSpace(value)
+	if selected == "" {
+		selected = "eu-west-1"
+	}
+	options := []string{"eu-west-1", "us-east-1", "us-east-2", "eu-west-2", "us-west-2"}
+	seen := map[string]bool{}
+	datalistID := "region-options"
+	if name != "" {
+		datalistID = "region-options-" + strings.NewReplacer(" ", "-", "/", "-", ":", "-", "[", "-", "]", "-").Replace(name)
+	}
+	var b strings.Builder
+	b.WriteString("<div class=\"region-control\">")
+	b.WriteString("<input class=\"region-input\" type=\"text\" name=\"" + html.EscapeString(name) + "\" value=\"" + html.EscapeString(selected) + "\" list=\"" + html.EscapeString(datalistID) + "\" placeholder=\"eu-west-1\" autocomplete=\"off\" />")
+	b.WriteString("<datalist id=\"" + html.EscapeString(datalistID) + "\">")
+	for _, option := range options {
+		if option == "" || seen[option] {
+			continue
+		}
+		seen[option] = true
+		b.WriteString("<option value=\"" + html.EscapeString(option) + "\"></option>")
+	}
+	if selected != "" && !seen[selected] {
+		b.WriteString("<option value=\"" + html.EscapeString(selected) + "\"></option>")
+	}
+	b.WriteString("</datalist>")
+	b.WriteString("</div>")
+	return b.String()
+}
+
+func renderRegionOptions(selected string) string {
+	options := []string{"eu-west-1", "us-east-1", "us-east-2", "eu-west-2", "us-west-2"}
+	seen := map[string]bool{}
+	var out strings.Builder
+	if selected != "" && !seen[selected] {
+		options = append([]string{selected}, options...)
+	}
+	for _, region := range options {
+		if region == "" {
+			continue
+		}
+		if seen[region] {
+			continue
+		}
+		seen[region] = true
+		out.WriteString("<option value=\"" + html.EscapeString(region) + "\"")
+		if region == selected {
+			out.WriteString(" selected")
+		}
+		out.WriteString(">" + html.EscapeString(region) + "</option>")
+	}
+	return out.String()
+}
+
+func renderRegionSelect(name, value string) string {
+	return renderRegionField(name, value)
+}
+
+func renderShellLaunchPage() string {
+	var b strings.Builder
+	b.WriteString("<!doctype html><html><head><meta charset=\"utf-8\"><title>Devcontainer Nginx: Open Shell</title>")
+	b.WriteString(renderStylesheetLink())
+	b.WriteString(renderFaviconLink())
+	b.WriteString("</head><body data-page=\"shell-launch\">")
+	b.WriteString(renderPageHeader("Open Shell"))
+	b.WriteString("<p class=\"muted\">Open a shell inside the devcontainer-nginx container with AWS environment variables pre-set.</p>")
+	b.WriteString("<form id=\"shell-launch-form\" action=\"/shell\" method=\"get\" target=\"_blank\">")
+	b.WriteString("<div class=\"row\"><div><label>Profile</label>" + renderProfileSelect("profile", "") + "</div>")
+	b.WriteString("<div><label>Region</label>" + renderRegionSelect("region", "eu-west-1") + "</div></div>")
+	b.WriteString("<div class=\"command-actions\"><button type=\"submit\">Open shell in new tab</button></div>")
+	b.WriteString("</form>")
+	b.WriteString("<script src=\"/static/app.js\"></script>")
 	b.WriteString("</body></html>")
 	return b.String()
 }

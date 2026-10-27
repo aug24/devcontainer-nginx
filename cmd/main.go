@@ -100,6 +100,7 @@ func main() {
 
 	log.Println("Performing initial reconciliation")
 	reconcileRoutes(ctx, dockerClient, identifier, resolver, configGen, homepageState, proxyID, *baseDomain, tunnelManager)
+	startAWSProfileCleanup(ctx, 5*time.Minute)
 
 	go watchEvents(ctx, dockerClient, identifier, resolver, configGen, homepageState, proxyID, *baseDomain, tunnelManager, time.Duration(*debounceMs)*time.Millisecond)
 

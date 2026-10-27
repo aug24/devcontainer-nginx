@@ -307,3 +307,70 @@ label {
   filter: grayscale(1);
 }
 
+.table-wrap {
+  width: 100%;
+  overflow-x: auto;
+  margin-top: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.table-wrap table {
+  table-layout: fixed;
+  min-width: 980px;
+}
+
+.table-wrap th,
+.table-wrap td {
+  padding: 10px 12px;
+  font-size: 0.95rem;
+  line-height: 1.4;
+  word-break: break-word;
+}
+
+.table-wrap th {
+  white-space: nowrap;
+}
+
+.table-output {
+  max-width: 260px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  color: var(--muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.table-actions {
+  white-space: nowrap;
+}
+
+.table-actions button {
+  margin: 2px 4px 2px 0;
+}
+
+.region-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+  width: 100%;
+  max-width: 220px;
+}
+
+.region-select {
+  flex: 0 0 170px;
+  min-width: 0;
+}
+
+.region-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  width: 100%;
+  max-width: 220px;
+}
+
+.form-row-spaced {
+  margin-top: 8px;
+}

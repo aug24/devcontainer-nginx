@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -127,7 +128,7 @@ func NewTunnelManager() *TunnelManager {
 	return &TunnelManager{
 		config: AWSConfig{
 			Profile: "",
-			Region:  "us-east-1",
+			Region:  "eu-west-1",
 		},
 		tunnels: make(map[string]*TunnelEntry),
 		process: make(map[string]*exec.Cmd),
@@ -141,13 +142,14 @@ func (tm *TunnelManager) SetAWSConfig(cfg AWSConfig) error {
 		cfg.Profile = ""
 	}
 	if strings.TrimSpace(cfg.Region) == "" {
-		cfg.Region = "us-east-1"
+		cfg.Region = "eu-west-1"
 	}
 	cfg.BootstrapCommand = normalizeBootstrapCommand(cfg.BootstrapCommand)
 	cfg.Output = strings.TrimSpace(cfg.Output)
 	cfg.ExitCode = 0
 	if cfg.BootstrapCommand == "" {
 		tm.config = cfg
+		RefreshAWSProfiles()
 		return nil
 	}
 
@@ -194,6 +196,7 @@ func (tm *TunnelManager) SetAWSConfig(cfg AWSConfig) error {
 		}
 	}
 	tm.config = cfg
+	RefreshAWSProfiles()
 	return nil
 }
 
@@ -671,4 +674,178 @@ func tunnelDiagnostics(tunnelManager *TunnelManager, baseDomain string) []Contai
 		})
 	}
 	return out
+}
+
+const awsCredentialsPath = "/root/.aws/credentials"
+
+var awsProfileState struct {
+	mu       sync.RWMutex
+	profiles []string
+}
+
+func readAWSProfilesFromCredentials() []string {
+	data, err := os.ReadFile(awsCredentialsPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		log.Printf("failed to read AWS credentials file %s: %v", awsCredentialsPath, err)
+		return nil
+	}
+
+	profiles := make([]string, 0)
+	for _, line := range strings.Split(string(data), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if len(trimmed) < 3 || !strings.HasPrefix(trimmed, "[") || !strings.HasSuffix(trimmed, "]") {
+			continue
+		}
+		profile := strings.TrimSpace(trimmed[1 : len(trimmed)-1])
+		if profile == "" {
+			continue
+		}
+		profiles = append(profiles, profile)
+	}
+	return profiles
+}
+
+func profileIsValid(profile string) bool {
+	profile = strings.TrimSpace(profile)
+	if profile == "" {
+		log.Printf("AWS profile validation skipped: empty profile name")
+		return false
+	}
+	start := time.Now()
+	log.Printf("Validating AWS profile %q via aws sts get-caller-identity", profile)
+	cmd := exec.Command("aws", "sts", "get-caller-identity", "--profile", profile, "--output", "json")
+	cmd.Env = append(os.Environ(),
+		"HOME=/root",
+		"AWS_CONFIG_FILE=/root/.aws/config",
+		"AWS_SHARED_CREDENTIALS_FILE=/root/.aws/credentials",
+	)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		duration := time.Since(start)
+		log.Printf("AWS profile %q validation failed after %s: %v: %s", profile, duration, err, strings.TrimSpace(string(output)))
+		return false
+	}
+	duration := time.Since(start)
+	log.Printf("AWS profile %q validation succeeded after %s", profile, duration)
+	return true
+}
+
+func removeAWSProfileFromCredentials(profile string) error {
+	profile = strings.TrimSpace(profile)
+	if profile == "" {
+		return nil
+	}
+	data, err := os.ReadFile(awsCredentialsPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	lines := strings.Split(string(data), "\n")
+	filtered := make([]string, 0, len(lines))
+	removing := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if len(trimmed) >= 3 && strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+			sectionName := strings.TrimSpace(trimmed[1 : len(trimmed)-1])
+			if sectionName == profile {
+				removing = true
+				continue
+			}
+			removing = false
+		}
+		if removing {
+			continue
+		}
+		filtered = append(filtered, line)
+	}
+	content := strings.TrimSuffix(strings.Join(filtered, "\n"), "\n")
+	if content != "" {
+		content += "\n"
+	}
+	return os.WriteFile(awsCredentialsPath, []byte(content), 0o600)
+}
+
+func RefreshAWSProfiles() []string {
+	start := time.Now()
+	profiles := readAWSProfilesFromCredentials()
+	log.Printf("Refreshing AWS profiles: discovered %d candidate(s) in %s", len(profiles), time.Since(start))
+	if len(profiles) == 0 {
+		awsProfileState.mu.Lock()
+		awsProfileState.profiles = nil
+		awsProfileState.mu.Unlock()
+		return nil
+	}
+
+	type profileResult struct {
+		profile string
+		valid   bool
+	}
+	results := make(chan profileResult, len(profiles))
+	semaphore := make(chan struct{}, 4)
+	var wg sync.WaitGroup
+	for _, profile := range profiles {
+		wg.Add(1)
+		go func(profile string) {
+			defer wg.Done()
+			semaphore <- struct{}{}
+			defer func() { <-semaphore }()
+			results <- profileResult{profile: profile, valid: profileIsValid(profile)}
+		}(profile)
+	}
+	wg.Wait()
+	close(results)
+
+	good := make([]string, 0, len(profiles))
+	stale := map[string]bool{}
+	for result := range results {
+		if !result.valid {
+			stale[result.profile] = true
+			continue
+		}
+		good = append(good, result.profile)
+	}
+	for _, profile := range profiles {
+		if !stale[profile] {
+			continue
+		}
+		if err := removeAWSProfileFromCredentials(profile); err != nil {
+			log.Printf("failed to remove stale AWS profile %q: %v", profile, err)
+		}
+	}
+	sort.Strings(good)
+	awsProfileState.mu.Lock()
+	awsProfileState.profiles = append([]string(nil), good...)
+	awsProfileState.mu.Unlock()
+	log.Printf("AWS profile refresh complete: %d valid profile(s) in %s", len(good), time.Since(start))
+	return append([]string(nil), good...)
+}
+
+func refreshKnownGoodAWSProfiles() []string {
+	return RefreshAWSProfiles()
+}
+
+func KnownGoodAWSProfiles() []string {
+	awsProfileState.mu.RLock()
+	defer awsProfileState.mu.RUnlock()
+	return append([]string(nil), awsProfileState.profiles...)
+}
+
+func startAWSProfileCleanup(ctx context.Context, interval time.Duration) {
+	refreshKnownGoodAWSProfiles()
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				refreshKnownGoodAWSProfiles()
+			}
+		}
+	}()
 }
