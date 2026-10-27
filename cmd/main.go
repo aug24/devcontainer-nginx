@@ -763,9 +763,7 @@ func (tunnelManager *TunnelManager) ShellWS(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	log.Printf("shell websocket connect: remote=%s profile=%s region=%s", r.RemoteAddr, profile, region)
-	upgrader := websocket.Upgrader{
-		CheckOrigin: func(r *http.Request) bool { return true },
-	}
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Printf("shell websocket upgrade failed: remote=%s profile=%s region=%s err=%v", r.RemoteAddr, profile, region, err)
@@ -780,6 +778,8 @@ func (tunnelManager *TunnelManager) ShellWS(w http.ResponseWriter, r *http.Reque
 		"AWS_PROFILE="+profile,
 		"AWS_REGION="+region,
 		"AWS_DEFAULT_REGION="+region,
+		"TERM=xterm-256color",
+		"COLORTERM=truecolor",
 	)
 	cmd := exec.Command("/bin/bash", "--login", "-i")
 	cmd.Env = env
@@ -902,6 +902,8 @@ func (tunnelManager *TunnelManager) RegisterShellRoutes(mux *http.ServeMux) {
 			"AWS_PROFILE="+profile,
 			"AWS_REGION="+region,
 			"AWS_DEFAULT_REGION="+region,
+			"TERM=xterm-256color",
+			"COLORTERM=truecolor",
 		)
 		cmd := exec.Command("/bin/bash", "--login", "-i")
 		cmd.Env = env

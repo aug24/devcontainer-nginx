@@ -191,3 +191,16 @@ func TestAWSConfigFormUsesPost(t *testing.T) {
 		t.Fatalf("AWS config page still contains old button label: %s", html)
 	}
 }
+
+func TestRenderShellPageUsesEscapedTerminalNewlines(t *testing.T) {
+	html := renderShellPage("frontend", "eu-west-1")
+	if !strings.Contains(html, "term.write('\\r\\n');") {
+		t.Fatalf("shell page missing escaped CRLF terminal writing: %s", html)
+	}
+	if strings.Contains(html, "term.write('\r\n');") {
+		t.Fatalf("shell page contains raw CRLFs in JS literal: %s", html)
+	}
+	if !strings.Contains(html, "/shell/ws?profile=") {
+		t.Fatalf("shell page missing websocket route: %s", html)
+	}
+}

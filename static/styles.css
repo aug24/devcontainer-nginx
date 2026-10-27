@@ -189,6 +189,26 @@ pre {
   background: var(--panel-alt);
 }
 
+#terminal {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  height: 520px;
+  min-height: 320px;
+  overflow: hidden;
+  background: #000;
+  border-radius: 8px;
+  padding: 10px;
+  box-sizing: border-box;
+}
+
+#terminal .xterm,
+#terminal .xterm-viewport,
+#terminal .xterm-screen {
+  width: 100% !important;
+  height: 100% !important;
+}
+
 input, textarea, button, select {
   font: inherit;
   padding: 8px 10px;
@@ -286,3 +306,4 @@ label {
   opacity: 0.45;
   filter: grayscale(1);
 }
+
