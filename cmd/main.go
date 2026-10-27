@@ -544,6 +544,14 @@ func startHomepageServer(ctx context.Context, nginxBasePath, generatedConfigPath
 
 	staticFileServer := http.FileServer(http.Dir(staticDir))
 	mux.Handle("/static/", http.StripPrefix("/static/", staticFileServer))
+	mux.HandleFunc("/favicon.ico", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "image/x-icon")
+		http.ServeFile(w, r, filepath.Join(staticDir, "favicon.ico"))
+	})
 
 	server := &http.Server{
 		Addr:              "127.0.0.1:18080",
@@ -669,6 +677,7 @@ func renderLogsPage(logText string) string {
 	var b strings.Builder
 	b.WriteString("<!doctype html><html><head><meta charset=\"utf-8\"><title>Devcontainer Nginx: Logs</title>")
 	b.WriteString(renderStylesheetLink())
+	b.WriteString(renderFaviconLink())
 	b.WriteString("</head><body>")
 	b.WriteString(renderPageHeader("Logs"))
 	b.WriteString("<div class=\"log-shell\"><pre>")

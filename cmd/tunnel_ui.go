@@ -10,6 +10,7 @@ func renderAWSConfigPage(cfg AWSConfig) string {
 	var b strings.Builder
 	b.WriteString("<!doctype html><html><head><meta charset=\"utf-8\"><title>Devcontainer Nginx: AWS Config</title>")
 	b.WriteString(renderStylesheetLink())
+	b.WriteString(renderFaviconLink())
 	b.WriteString("</head><body data-page=\"aws-config\">")
 	b.WriteString(renderPageHeader("AWS Config"))
 	b.WriteString("<p>Paste the exact shell command(s) to run in the current container user. This is the source of truth; profile and region are supplied inside the command itself.</p>")
@@ -31,6 +32,7 @@ func renderTunnelPage(cfg AWSConfig, tunnels []TunnelEntry) string {
 	var b strings.Builder
 	b.WriteString("<!doctype html><html><head><meta charset=\"utf-8\"><title>Devcontainer Nginx: Tunnels</title>")
 	b.WriteString(renderStylesheetLink())
+	b.WriteString(renderFaviconLink())
 	b.WriteString("</head><body data-page=\"tunnel-page\">")
 	b.WriteString(renderPageHeader("Tunnels"))
 	b.WriteString("<p><a href=\"/aws-config\">AWS config</a> | <a href=\"/command-generator\">Command generator</a></p>")
@@ -91,6 +93,7 @@ func renderCommandGeneratorPage() string {
 	var b strings.Builder
 	b.WriteString("<!doctype html><html><head><meta charset=\"utf-8\"><title>Devcontainer Nginx: Command Generator</title>")
 	b.WriteString(renderStylesheetLink())
+	b.WriteString(renderFaviconLink())
 	b.WriteString("</head><body data-page=\"command-generator\">")
 	b.WriteString(renderPageHeader("Command Generator"))
 	b.WriteString("<p class=\"muted\">Generate copy-ready Docker exec commands for AWS SSM sessions.</p>")
@@ -117,3 +120,5 @@ func renderCommandGeneratorPage() string {
 	b.WriteString("</body></html>")
 	return b.String()
 }
+
+

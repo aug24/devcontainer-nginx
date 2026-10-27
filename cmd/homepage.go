@@ -366,6 +366,7 @@ func renderHomepageHTML(rows []ContainerDiagnostic, revision uint64) string {
 	var b strings.Builder
 	b.WriteString("<!doctype html><html><head><meta charset=\"utf-8\"><title>Devcontainer Nginx: Home</title>")
 	b.WriteString(renderStylesheetLink())
+	b.WriteString(renderFaviconLink())
 	b.WriteString("</head>")
 	b.WriteString(fmt.Sprintf("<body data-page=\"homepage\" data-current-revision=\"%d\">", revision))
 	b.WriteString(renderPageHeader("Home"))
@@ -429,7 +430,7 @@ func renderContainerCell(name, metadata string) string {
 }
 
 func renderPageHeader(title string) string {
-	return fmt.Sprintf("<h1><a href=\"/\" class=\"page-header-link\">%s</a>: %s</h1>", html.EscapeString("Devcontainer Nginx"), html.EscapeString(title))
+	return fmt.Sprintf(`<div class="page-header"><h1><a href="/" class="page-header-link">%s</a>: %s</h1><a href="/" class="site-icon-link" aria-label="Home"><img src="/static/icon.png" alt="Devcontainer Nginx home" width="32" height="32"></a></div>`, html.EscapeString("Devcontainer Nginx"), html.EscapeString(title))
 }
 
 func renderStylesheetLink() string {
@@ -478,10 +479,15 @@ func renderMetadataLines(metadata string) string {
 	return strings.Join(lines, "<br>")
 }
 
+func renderFaviconLink() string {
+	return `<link rel="icon" type="image/png" href="/favicon.ico">`
+}
+
 func renderContainersHTML(names []string) string {
 	var b strings.Builder
 	b.WriteString("<!doctype html><html><head><meta charset=\"utf-8\"><title>Devcontainer Nginx: Containers</title>")
 	b.WriteString(renderStylesheetLink())
+	b.WriteString(renderFaviconLink())
 	b.WriteString("</head><body data-page=\"containers\">")
 	b.WriteString(renderPageHeader("Containers"))
 	if len(names) == 0 {
