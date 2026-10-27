@@ -260,3 +260,29 @@ label {
 .hidden {
   display: none;
 }
+
+.command-secondary-row {
+  margin-top: 8px;
+}
+
+.command-field {
+  opacity: 0.45;
+  filter: grayscale(1);
+}
+
+.command-field input:disabled,
+.command-field input[readonly],
+.command-field input:not(:placeholder-shown),
+.command-field input {
+  opacity: 1;
+}
+
+.command-field.is-active {
+  opacity: 1;
+  filter: none;
+}
+
+.command-field.is-disabled {
+  opacity: 0.45;
+  filter: grayscale(1);
+}

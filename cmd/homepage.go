@@ -404,6 +404,7 @@ func renderHomepageHTML(rows []ContainerDiagnostic, revision uint64) string {
 	b.WriteString("<li><a href=\"/tunnels\">Start or stop tunnel to services</a></li>")
 	b.WriteString("<li><a href=\"/shell-command-generator\">Generate shell commands for bastion host access</a></li>")
 	b.WriteString("<li><a href=\"/logs\">View logs</a></li>")
+	b.WriteString("<li><a href=\"/shell-launch\">Open a shell in a new tab</a></li>")
 	b.WriteString("</ul>")
 	b.WriteString(renderHelpSection("homepage"))
 	b.WriteString("<h2>Debugging Container Services</h2><ul>")

@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"sort"
@@ -17,8 +18,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/creack/pty"
 	"github.com/dev-tools/devcontainer-nginx/internal/discovery"
 	"github.com/dev-tools/devcontainer-nginx/internal/nginx"
+	"github.com/gorilla/websocket"
 )
 
 func main() {
@@ -552,6 +555,9 @@ func startHomepageServer(ctx context.Context, nginxBasePath, generatedConfigPath
 		w.Header().Set("Content-Type", "image/x-icon")
 		http.ServeFile(w, r, filepath.Join(staticDir, "favicon.ico"))
 	})
+	if tunnelManager != nil {
+		tunnelManager.RegisterShellRoutes(mux)
+	}
 
 	server := &http.Server{
 		Addr:              "127.0.0.1:18080",
@@ -720,3 +726,248 @@ func parseAWSConfigRequest(r *http.Request) (AWSConfig, error) {
 	}, nil
 }
 
+func (tunnelManager *TunnelManager) Shell(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	profile := strings.TrimSpace(r.URL.Query().Get("profile"))
+	region := strings.TrimSpace(r.URL.Query().Get("region"))
+	if profile == "" || region == "" {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(renderShellLaunchPage()))
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = w.Write([]byte(renderShellPage(profile, region)))
+}
+
+func (tunnelManager *TunnelManager) ShellLaunch(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = w.Write([]byte(renderShellLaunchPage()))
+}
+
+func (tunnelManager *TunnelManager) ShellWS(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	profile := strings.TrimSpace(r.URL.Query().Get("profile"))
+	region := strings.TrimSpace(r.URL.Query().Get("region"))
+	if profile == "" || region == "" {
+		http.Error(w, "profile and region are required", http.StatusBadRequest)
+		return
+	}
+	log.Printf("shell websocket connect: remote=%s profile=%s region=%s", r.RemoteAddr, profile, region)
+	upgrader := websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool { return true },
+	}
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Printf("shell websocket upgrade failed: remote=%s profile=%s region=%s err=%v", r.RemoteAddr, profile, region, err)
+		return
+	}
+	defer func() {
+		log.Printf("shell websocket disconnect: remote=%s profile=%s region=%s", r.RemoteAddr, profile, region)
+		_ = conn.Close()
+	}()
+
+	env := append(os.Environ(),
+		"AWS_PROFILE="+profile,
+		"AWS_REGION="+region,
+		"AWS_DEFAULT_REGION="+region,
+	)
+	cmd := exec.Command("/bin/bash", "--login", "-i")
+	cmd.Env = env
+	cmd.Dir = "/workspace"
+	if _, err := os.Stat(cmd.Dir); err != nil {
+		cmd.Dir = "/"
+	}
+	log.Printf("starting shell PTY: remote=%s profile=%s region=%s dir=%s", r.RemoteAddr, profile, region, cmd.Dir)
+	ptyFile, err := pty.Start(cmd)
+	if err != nil {
+		log.Printf("failed to start shell: remote=%s profile=%s region=%s err=%v", r.RemoteAddr, profile, region, err)
+		_ = conn.WriteMessage(websocket.TextMessage, []byte("Failed to start shell: "+err.Error()+"\r\n"))
+		return
+	}
+	defer func() {
+		log.Printf("killing shell PTY: remote=%s profile=%s region=%s pid=%d", r.RemoteAddr, profile, region, cmd.Process.Pid)
+		_ = cmd.Process.Kill()
+		_ = ptyFile.Close()
+	}()
+
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			n, err := ptyFile.Read(buf)
+			if n > 0 {
+				if err := conn.WriteMessage(websocket.BinaryMessage, buf[:n]); err != nil {
+					log.Printf("shell websocket write failed: remote=%s profile=%s region=%s err=%v", r.RemoteAddr, profile, region, err)
+					return
+				}
+			}
+			if err != nil {
+				log.Printf("shell PTY reader ended: remote=%s profile=%s region=%s err=%v", r.RemoteAddr, profile, region, err)
+				return
+			}
+		}
+	}()
+
+	for {
+		messageType, data, err := conn.ReadMessage()
+		if err != nil {
+			log.Printf("shell websocket read ended: remote=%s profile=%s region=%s err=%v", r.RemoteAddr, profile, region, err)
+			return
+		}
+		switch messageType {
+		case websocket.TextMessage:
+			if len(data) > 0 {
+				var resize struct {
+					Type string `json:"type"`
+					Cols int    `json:"cols"`
+					Rows int    `json:"rows"`
+				}
+				if json.Unmarshal(data, &resize) == nil && resize.Type == "resize" && resize.Cols > 0 && resize.Rows > 0 {
+					pty.Setsize(ptyFile, &pty.Winsize{Rows: uint16(resize.Rows), Cols: uint16(resize.Cols)})
+					continue
+				}
+			}
+			if _, err := ptyFile.Write(data); err != nil {
+				log.Printf("shell PTY write failed: remote=%s profile=%s region=%s err=%v", r.RemoteAddr, profile, region, err)
+				return
+			}
+		case websocket.BinaryMessage:
+			if _, err := ptyFile.Write(data); err != nil {
+				log.Printf("shell PTY binary write failed: remote=%s profile=%s region=%s err=%v", r.RemoteAddr, profile, region, err)
+				return
+			}
+		}
+	}
+}
+
+func (tunnelManager *TunnelManager) RegisterShellRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("/shell", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		profile := strings.TrimSpace(r.URL.Query().Get("profile"))
+		region := strings.TrimSpace(r.URL.Query().Get("region"))
+		if profile == "" || region == "" {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = w.Write([]byte(renderShellLaunchPage()))
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(renderShellPage(profile, region)))
+	})
+
+	mux.HandleFunc("/shell-launch", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(renderShellLaunchPage()))
+	})
+
+	mux.HandleFunc("/shell/ws", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		profile := strings.TrimSpace(r.URL.Query().Get("profile"))
+		region := strings.TrimSpace(r.URL.Query().Get("region"))
+		if profile == "" || region == "" {
+			http.Error(w, "profile and region are required", http.StatusBadRequest)
+			return
+		}
+		log.Printf("shell websocket connect: remote=%s profile=%s region=%s", r.RemoteAddr, profile, region)
+		upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			log.Printf("shell websocket upgrade failed: remote=%s profile=%s region=%s err=%v", r.RemoteAddr, profile, region, err)
+			return
+		}
+		defer func() {
+			log.Printf("shell websocket disconnect: remote=%s profile=%s region=%s", r.RemoteAddr, profile, region)
+			_ = conn.Close()
+		}()
+
+		env := append(os.Environ(),
+			"AWS_PROFILE="+profile,
+			"AWS_REGION="+region,
+			"AWS_DEFAULT_REGION="+region,
+		)
+		cmd := exec.Command("/bin/bash", "--login", "-i")
+		cmd.Env = env
+		cmd.Dir = "/workspace"
+		if _, err := os.Stat(cmd.Dir); err != nil {
+			cmd.Dir = "/"
+		}
+		log.Printf("starting shell PTY: remote=%s profile=%s region=%s dir=%s", r.RemoteAddr, profile, region, cmd.Dir)
+		ptyFile, err := pty.Start(cmd)
+		if err != nil {
+			log.Printf("failed to start shell: remote=%s profile=%s region=%s err=%v", r.RemoteAddr, profile, region, err)
+			_ = conn.WriteMessage(websocket.TextMessage, []byte("Failed to start shell: "+err.Error()+"\r\n"))
+			return
+		}
+		defer func() {
+			log.Printf("killing shell PTY: remote=%s profile=%s region=%s pid=%d", r.RemoteAddr, profile, region, cmd.Process.Pid)
+			_ = cmd.Process.Kill()
+			_ = ptyFile.Close()
+		}()
+
+		go func() {
+			buf := make([]byte, 4096)
+			for {
+				n, err := ptyFile.Read(buf)
+				if n > 0 {
+					if err := conn.WriteMessage(websocket.BinaryMessage, buf[:n]); err != nil {
+						log.Printf("shell websocket write failed: remote=%s profile=%s region=%s err=%v", r.RemoteAddr, profile, region, err)
+						return
+					}
+				}
+				if err != nil {
+					log.Printf("shell PTY reader ended: remote=%s profile=%s region=%s err=%v", r.RemoteAddr, profile, region, err)
+					return
+				}
+			}
+		}()
+
+		for {
+			messageType, data, err := conn.ReadMessage()
+			if err != nil {
+				log.Printf("shell websocket read ended: remote=%s profile=%s region=%s err=%v", r.RemoteAddr, profile, region, err)
+				return
+			}
+			switch messageType {
+			case websocket.TextMessage:
+				if len(data) > 0 {
+					var resize struct {
+						Type string `json:"type"`
+						Cols int    `json:"cols"`
+						Rows int    `json:"rows"`
+					}
+					if json.Unmarshal(data, &resize) == nil && resize.Type == "resize" && resize.Cols > 0 && resize.Rows > 0 {
+						pty.Setsize(ptyFile, &pty.Winsize{Rows: uint16(resize.Rows), Cols: uint16(resize.Cols)})
+						continue
+					}
+				}
+				if _, err := ptyFile.Write(data); err != nil {
+					log.Printf("shell PTY write failed: remote=%s profile=%s region=%s err=%v", r.RemoteAddr, profile, region, err)
+					return
+				}
+			case websocket.BinaryMessage:
+				if _, err := ptyFile.Write(data); err != nil {
+					log.Printf("shell PTY binary write failed: remote=%s profile=%s region=%s err=%v", r.RemoteAddr, profile, region, err)
+					return
+				}
+			}
+		}
+	})
+}

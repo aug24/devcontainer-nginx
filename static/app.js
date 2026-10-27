@@ -206,6 +206,17 @@
       tunnelFields.forEach((element) => {
         element.classList.toggle('hidden', !show);
       });
+
+      const secondaryFields = document.querySelectorAll('[data-command-secondary]');
+      secondaryFields.forEach((field) => {
+        const parent = field.closest('.command-field');
+        const isDisabled = command === 'bash';
+        if (parent) {
+          parent.classList.toggle('is-disabled', isDisabled);
+          parent.classList.toggle('is-active', !isDisabled);
+        }
+        field.disabled = isDisabled;
+      });
     }
 
     function render() {
@@ -227,25 +238,29 @@
         parts.push('-u', 'root');
       }
 
-      parts.push('-it', container, command);
-
-      if (profile) {
-        parts.push('--profile', profile);
-      }
-
-      if (command === 'host-tunnel') {
-        if (stack) parts.push('--stack', stack);
-        if (stage) parts.push('--stage', stage);
-        if (app) parts.push('--app', app);
-        if (region) parts.push('--region', region);
-        if (alb) parts.push('--alb', alb);
-        if (localPort) parts.push('--local-port', localPort);
-        if (name) parts.push('--name', name);
+      if (command === 'bash') {
+        parts.push('-it', '-e', `AWS_PROFILE=${profile || 'frontend'}`, '-e', `AWS_REGION=${region || 'eu-west-1'}`, container, 'bash');
       } else {
-        if (stack) parts.push('--stack', stack);
-        if (stage) parts.push('--stage', stage);
-        if (app) parts.push('--app', app);
-        if (region) parts.push('--region', region);
+        parts.push('-it', container, command);
+
+        if (profile) {
+          parts.push('--profile', profile);
+        }
+
+        if (command === 'host-tunnel') {
+          if (stack) parts.push('--stack', stack);
+          if (stage) parts.push('--stage', stage);
+          if (app) parts.push('--app', app);
+          if (region) parts.push('--region', region);
+          if (alb) parts.push('--alb', alb);
+          if (localPort) parts.push('--local-port', localPort);
+          if (name) parts.push('--name', name);
+        } else {
+          if (stack) parts.push('--stack', stack);
+          if (stage) parts.push('--stage', stage);
+          if (app) parts.push('--app', app);
+          if (region) parts.push('--region', region);
+        }
       }
 
       output.textContent = parts.join(' ');
