@@ -15,7 +15,7 @@ func renderAWSConfigPage(cfg AWSConfig) string {
 	b.WriteString("</head><body data-page=\"aws-config\">")
 	b.WriteString(renderPageHeader("AWS Config"))
 	b.WriteString("<p>Paste the exact shell command(s) to run in the current container user. This is the source of truth; profile and region are supplied inside the command itself.</p>")
-	b.WriteString("<div class=\"form-actions\"><button type=\"button\" id=\"paste-and-save-button\">Paste and Save</button></div>")
+	b.WriteString("<div class=\"form-actions\"><button type=\"button\" id=\"paste-and-save-button\">Paste and Save</button><button type=\"button\" id=\"quick-paste-and-shell-button\" data-action=\"quick-paste-and-shell\">Quick paste, save, shell</button></div>")
 	b.WriteString("<form id=\"aws-form\" method=\"post\" action=\"/aws-config\">")
 	b.WriteString("<label>Credential bootstrap commands</label><textarea name=\"bootstrapCommand\">" + html.EscapeString(cfg.BootstrapCommand) + "</textarea>")
 	b.WriteString("<div class=\"form-actions\"><button type=\"submit\">Save</button></div>")

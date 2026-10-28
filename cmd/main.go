@@ -307,15 +307,20 @@ func startHomepageServer(ctx context.Context, nginxBasePath, generatedConfigPath
 		}
 		if r.Method == http.MethodPost {
 			defer r.Body.Close()
+			log.Printf("/aws-config POST: remote=%s contentType=%q", r.RemoteAddr, r.Header.Get("Content-Type"))
 			cfg, err := parseAWSConfigRequest(r)
 			if err != nil {
+				log.Printf("/aws-config parse failed: remote=%s err=%v", r.RemoteAddr, err)
 				http.Error(w, "invalid request: "+err.Error(), http.StatusBadRequest)
 				return
 			}
+			log.Printf("/aws-config POST payload: bootstrapLen=%d profile=%q region=%q", len(cfg.BootstrapCommand), cfg.Profile, cfg.Region)
 			if err := tunnelManager.SetAWSConfig(cfg); err != nil {
+				log.Printf("/aws-config save failed: remote=%s err=%v", r.RemoteAddr, err)
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
+			log.Printf("/aws-config save succeeded: remote=%s snapshot=%+v", r.RemoteAddr, tunnelManager.AWSConfigSnapshot())
 			http.Redirect(w, r, "/aws-config", http.StatusSeeOther)
 			return
 		}

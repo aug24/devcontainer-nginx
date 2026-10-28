@@ -66,14 +66,68 @@
   function setupAWSConfig() {
     const form = document.getElementById('aws-form');
     const pasteButton = document.getElementById('paste-and-save-button');
+    const quickButton = document.getElementById('quick-paste-and-shell-button');
     if (!form) {
       return;
     }
 
-    async function submitForm() {
+    function inferProfileFromBootstrapCommand(text) {
+      if (!text || typeof text !== 'string') {
+        return '';
+      }
+
+      const patterns = [
+        /aws\s+configure\s+set\s+--profile\s+([A-Za-z0-9._-]+)/i,
+        /(?:--profile|--profile=)\s*([A-Za-z0-9._-]+)/i,
+        /(?:AWS_PROFILE|aws_profile)\s*(?:=|:)\s*["']?([A-Za-z0-9._-]+)/i,
+        /(?:export\s+)?AWS_PROFILE\s*=\s*["']?([A-Za-z0-9._-]+)/i,
+      ];
+
+      for (const pattern of patterns) {
+        const match = text.match(pattern);
+        if (match && match[1]) {
+          return match[1];
+        }
+      }
+
+      return '';
+    }
+
+    function clearBootstrapCommand() {
+      const textarea = form.querySelector('textarea[name="bootstrapCommand"]');
+      if (textarea) {
+        textarea.value = '';
+      }
+    }
+
+    function normalizeBootstrapCommandText(value) {
+      return (value || '').toString().trim();
+    }
+
+    function looksLikeAWSBootstrapCommand(value) {
+      const trimmed = normalizeBootstrapCommandText(value);
+      if (!trimmed) {
+        return true;
+      }
+      return trimmed.toLowerCase().startsWith('aws configure');
+    }
+
+    async function submitForm({ openShellAfterSave = false, popup = null } = {}) {
       const formData = new FormData(form);
+      const bootstrapCommand = normalizeBootstrapCommandText(formData.get('bootstrapCommand'));
+      if (bootstrapCommand && !looksLikeAWSBootstrapCommand(bootstrapCommand)) {
+        console.warn('[quick-shell] rejected bootstrap command that does not start with aws configure', { bootstrapCommandPreview: bootstrapCommand.slice(0, 80) });
+        alert('Clipboard contents must begin with "aws configure" after trimming whitespace.');
+        return false;
+      }
       const payload = new URLSearchParams({
-        bootstrapCommand: (formData.get('bootstrapCommand') || '').toString(),
+        bootstrapCommand,
+      });
+
+      console.log('[quick-shell] submitForm start', {
+        openShellAfterSave,
+        bootstrapCommandLength: bootstrapCommand.length,
+        popupExists: !!popup,
       });
 
       const response = await fetch('/aws-config', {
@@ -82,12 +136,53 @@
         body: payload,
       });
 
+      console.log('[quick-shell] submitForm response', {
+        status: response.status,
+        ok: response.ok,
+        redirected: response.redirected,
+        url: response.url,
+      });
+
       if (!response.ok) {
-        alert((await response.text()) || 'failed');
-        return;
+        const text = await response.text();
+        console.error('[quick-shell] submitForm failed', { status: response.status });
+        alert(text || 'failed');
+        return false;
       }
 
+      clearBootstrapCommand();
+
+      if (openShellAfterSave) {
+        const profile = inferProfileFromBootstrapCommand(bootstrapCommand);
+        console.log('[quick-shell] profile inference', { profile, bootstrapCommandLength: bootstrapCommand.length });
+        if (!profile) {
+          console.warn('[quick-shell] no profile inferred from bootstrap command');
+          alert('No AWS profile could be inferred from the pasted command.');
+          if (popup) {
+            popup.close();
+          }
+          return false;
+        }
+        const query = new URLSearchParams({
+          profile,
+          region: 'eu-west-1',
+        });
+        const url = '/shell?' + query.toString();
+        console.log('[quick-shell] opening shell URL', { url, profile, region: 'eu-west-1' });
+        if (popup) {
+          popup.location.href = url;
+          popup.focus();
+          console.log('[quick-shell] shell URL assigned to popup', { popupLocation: popup.location.href });
+        } else {
+          const opened = window.open(url, '_blank');
+          console.log('[quick-shell] window.open result', { opened: !!opened, url });
+        }
+        return true;
+      }
+
+      console.log('[quick-shell] normal save; redirecting to /aws-config');
       window.location.href = '/aws-config';
+      return true;
     }
 
     form.addEventListener('submit', async (event) => {
@@ -97,17 +192,82 @@
 
     if (pasteButton) {
       pasteButton.addEventListener('click', async () => {
+        console.log('[quick-shell] paste-and-save click');
         try {
           const text = await navigator.clipboard.readText();
+          console.log('[quick-shell] clipboard read for paste-and-save', { length: text.length });
+          if (!looksLikeAWSBootstrapCommand(text)) {
+            console.warn('[quick-shell] clipboard rejected for paste-and-save', { preview: text.slice(0, 80) });
+            alert('Clipboard contents must begin with "aws configure" after trimming whitespace.');
+            return;
+          }
           const textarea = form.querySelector('textarea[name="bootstrapCommand"]');
           if (textarea) {
             textarea.value = text;
+            console.log('[quick-shell] textarea populated from clipboard');
           }
           await submitForm();
         } catch (_error) {
+          console.error('[quick-shell] paste-and-save failed', _error);
           alert('Unable to read clipboard contents.');
         }
       });
+    }
+
+    const quickButtonTargets = Array.from(
+      new Set([
+        document.getElementById('quick-paste-and-shell-button'),
+        document.querySelector('[data-action="quick-paste-and-shell"]'),
+      ].filter(Boolean))
+    );
+
+    quickButtonTargets.forEach((button) => {
+      if (button.dataset.quickShellBound === 'true') {
+        return;
+      }
+      button.dataset.quickShellBound = 'true';
+      button.addEventListener('click', async () => {
+        console.log('[quick-shell] quick button clicked');
+        const shellTab = window.open('', '_blank');
+        console.log('[quick-shell] shell tab created', { shellTabExists: !!shellTab, url: 'about:blank' });
+        if (!shellTab) {
+          console.warn('[quick-shell] new tab was blocked before save');
+          alert('Opening a new shell tab was blocked. Please allow new tabs for this page and try again.');
+          return;
+        }
+
+        try {
+          const text = await navigator.clipboard.readText();
+          console.log('[quick-shell] clipboard read for quick action', { length: text.length });
+          if (!looksLikeAWSBootstrapCommand(text)) {
+            console.warn('[quick-shell] clipboard rejected for quick action', { preview: text.slice(0, 80) });
+            alert('Clipboard contents must begin with "aws configure" after trimming whitespace.');
+            shellTab.close();
+            return;
+          }
+          const textarea = form.querySelector('textarea[name="bootstrapCommand"]');
+          if (textarea) {
+            textarea.value = text;
+            console.log('[quick-shell] textarea populated for quick action');
+          }
+
+          const ok = await submitForm({ openShellAfterSave: true, popup: shellTab });
+          if (!ok) {
+            console.log('[quick-shell] quick action did not complete successfully');
+            return;
+          }
+        } catch (_error) {
+          console.error('[quick-shell] quick action failed', _error);
+          alert('Unable to read clipboard contents.');
+          if (shellTab) {
+            shellTab.close();
+          }
+        }
+      });
+    });
+
+    if (quickButton) {
+      quickButton.dataset.quickShellBound = 'true';
     }
   }
 

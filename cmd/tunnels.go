@@ -147,8 +147,10 @@ func (tm *TunnelManager) SetAWSConfig(cfg AWSConfig) error {
 	cfg.BootstrapCommand = normalizeBootstrapCommand(cfg.BootstrapCommand)
 	cfg.Output = strings.TrimSpace(cfg.Output)
 	cfg.ExitCode = 0
+	log.Printf("SetAWSConfig: start profile=%q region=%q bootstrapLen=%d", cfg.Profile, cfg.Region, len(cfg.BootstrapCommand))
 	if cfg.BootstrapCommand == "" {
 		tm.config = cfg
+		log.Printf("SetAWSConfig: no bootstrap command; refreshed AWS profiles only; snapshot=%+v", tm.config)
 		RefreshAWSProfiles()
 		return nil
 	}
@@ -163,6 +165,7 @@ func (tm *TunnelManager) SetAWSConfig(cfg AWSConfig) error {
 		"AWS_CONFIG_FILE=/root/.aws/config",
 		"AWS_SHARED_CREDENTIALS_FILE=/root/.aws/credentials",
 	)
+	log.Printf("SetAWSConfig: executing bootstrap command: %s", cfg.BootstrapCommand)
 	output, err := cmd.CombinedOutput()
 	trimmedOutput := strings.TrimSpace(string(output))
 	cfg.Output = trimmedOutput
@@ -172,10 +175,12 @@ func (tm *TunnelManager) SetAWSConfig(cfg AWSConfig) error {
 		} else {
 			cfg.ExitCode = 1
 		}
+		log.Printf("SetAWSConfig: bootstrap command failed exit=%d output=%q err=%v", cfg.ExitCode, trimmedOutput, err)
 		return fmt.Errorf("aws bootstrap command failed (exit %d): %w: %s", cfg.ExitCode, err, trimmedOutput)
 	}
 	cfg.ExitCode = 0
 	cfg.BootstrapCommand = ""
+	log.Printf("SetAWSConfig: bootstrap command succeeded outputLen=%d", len(trimmedOutput))
 	if err := os.Chmod("/root/.aws", 0o700); err != nil {
 		return fmt.Errorf("failed to set aws config directory permissions: %w", err)
 	}
@@ -196,6 +201,7 @@ func (tm *TunnelManager) SetAWSConfig(cfg AWSConfig) error {
 		}
 	}
 	tm.config = cfg
+	log.Printf("SetAWSConfig: refreshing profiles after save; snapshot=%+v", tm.config)
 	RefreshAWSProfiles()
 	return nil
 }
@@ -214,7 +220,8 @@ func (tm *TunnelManager) AWSConfigSnapshot() AWSConfig {
 		cfg.Profile = ""
 	}
 	if strings.TrimSpace(cfg.Region) == "" {
-		cfg.Region = "us-east-1"
+		log.Printf("AWSConfigSnapshot: region blank, defaulting to eu-west-1")
+		cfg.Region = "eu-west-1"
 	}
 	return cfg
 }
