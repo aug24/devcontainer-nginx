@@ -251,8 +251,9 @@ func startHomepageServer(ctx context.Context, nginxBasePath, generatedConfigPath
 		}
 		rows := homepageState.Snapshot()
 		rows = append(rows, tunnelDiagnostics(tunnelManager, *baseDomain)...)
+		endpointRows := publishedEndpointRows(configGen.CurrentRoutes(), rows, tunnelManager)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = w.Write([]byte(renderHomepageHTML(rows, homepageState.Revision())))
+		_, _ = w.Write([]byte(renderHomepageHTML(rows, homepageState.Revision(), endpointRows)))
 	})
 
 	mux.HandleFunc("/homepage/version", func(w http.ResponseWriter, r *http.Request) {
@@ -282,6 +283,21 @@ func startHomepageServer(ctx context.Context, nginxBasePath, generatedConfigPath
 		sort.Strings(names)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_, _ = w.Write([]byte(renderContainersHTML(names)))
+	})
+
+	mux.HandleFunc("/debug", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if r.URL.Path != "/debug" {
+			http.NotFound(w, r)
+			return
+		}
+		rows := homepageState.Snapshot()
+		rows = append(rows, tunnelDiagnostics(tunnelManager, *baseDomain)...)
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(renderDebugPageHTML(rows, homepageState.Revision())))
 	})
 
 	mux.HandleFunc("/container/", func(w http.ResponseWriter, r *http.Request) {
@@ -979,3 +995,4 @@ func (tunnelManager *TunnelManager) RegisterShellRoutes(mux *http.ServeMux) {
 		}
 	})
 }
+

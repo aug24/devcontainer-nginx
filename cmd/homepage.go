@@ -362,7 +362,7 @@ func renderHelpSection(page string) string {
 	return fmt.Sprintf("<div class=\"help-block\"><h3>How this page works</h3><pre>%s</pre></div>", html.EscapeString(text))
 }
 
-func renderHomepageHTML(rows []ContainerDiagnostic, revision uint64) string {
+func renderHomepageHTML(rows []ContainerDiagnostic, revision uint64, endpointRows []PublishedEndpointRow) string {
 	var b strings.Builder
 	b.WriteString("<!doctype html><html><head><meta charset=\"utf-8\"><title>Devcontainer Nginx: Home</title>")
 	b.WriteString(renderStylesheetLink())
@@ -370,34 +370,28 @@ func renderHomepageHTML(rows []ContainerDiagnostic, revision uint64) string {
 	b.WriteString("</head>")
 	b.WriteString(fmt.Sprintf("<body data-page=\"homepage\" data-current-revision=\"%d\">", revision))
 	b.WriteString(renderPageHeader("Home"))
-	b.WriteString("<table><thead><tr><th>Process</th><th>Status</th><th>Reason</th><th>Routes</th></tr></thead><tbody>")
+	b.WriteString("<table><thead><tr><th>Endpoint</th><th>Service</th></tr></thead><tbody>")
 
-	if len(rows) == 0 {
-		b.WriteString("<tr><td colspan=\"4\">No running containers were considered.</td></tr>")
+	if len(endpointRows) == 0 {
+		b.WriteString("<tr><td colspan=\"2\">No published endpoints are currently configured.</td></tr>")
 	} else {
-		for _, row := range rows {
-			statusClass := "skip"
-			switch row.Status {
-			case "routed", "running":
-				statusClass = "ok"
-			case "partial":
-				statusClass = "partial"
-			}
-
-			b.WriteString("<tr><td>")
-			b.WriteString(renderContainerCell(row.Name, row.Metadata))
-			b.WriteString("</td><td class=\"")
-			b.WriteString(statusClass)
-			b.WriteString("\">")
-			b.WriteString(html.EscapeString(row.Status))
-			b.WriteString("</td><td>")
-			b.WriteString(html.EscapeString(row.Reason))
-			b.WriteString("</td><td>")
-			b.WriteString(renderRouteLinks(row.Routes))
+		for _, row := range endpointRows {
+			host := html.EscapeString(row.Hostname)
+			provider := html.EscapeString(row.Provider)
+			status := html.EscapeString(row.Status)
+			b.WriteString("<tr><td><a href=\"https://")
+			b.WriteString(host)
+			b.WriteString("\" target=\"_blank\" rel=\"noopener noreferrer\">")
+			b.WriteString(host)
+			b.WriteString(" ")
+			b.WriteString(renderOpenInNewTabIcon())
+			b.WriteString("</a></td><td>")
+			b.WriteString(provider)
+			b.WriteString(" — ")
+			b.WriteString(status)
 			b.WriteString("</td></tr>")
 		}
 	}
-
 	b.WriteString("</tbody></table>")
 	b.WriteString("<h2>Actions</h2><ul>")
 	b.WriteString("<li><a href=\"/aws-config\">Configure AWS credentials in this container</a></li>")
@@ -412,6 +406,7 @@ func renderHomepageHTML(rows []ContainerDiagnostic, revision uint64) string {
 	b.WriteString("<li><a href=\"/generated.conf\">Generated nginx config</a></li>")
 	b.WriteString("<li><a href=\"/nginx/config\">Full nginx config</a></li>")
 	b.WriteString("<li><a href=\"/containers\">Container config</a></li>")
+	b.WriteString("<li><a href=\"/debug\">Debug page</a></li>")
 	b.WriteString("</ul>")
 	b.WriteString("<script src=\"/static/app.js\"></script>")
 	b.WriteString("</body></html>")
@@ -504,6 +499,197 @@ func renderContainersHTML(names []string) string {
 		}
 		b.WriteString("</ul>")
 	}
+	b.WriteString("<script src=\"/static/app.js\"></script>")
+	b.WriteString("</body></html>")
+	return b.String()
+}
+
+type PublishedEndpointRow struct {
+	Hostname string
+	Provider string
+	Status   string
+}
+
+func isInternalHomepageRoute(hostname string) bool {
+	hostname = strings.TrimSpace(hostname)
+	if hostname == "" {
+		return false
+	}
+	base := strings.TrimPrefix(hostname, "http://")
+	base = strings.TrimPrefix(base, "https://")
+	return strings.EqualFold(base, "devcontainer-nginx") || strings.HasPrefix(strings.ToLower(base), "devcontainer-nginx.")
+}
+
+func formatHomepageStatus(route nginx.Route, provider, status string) string {
+	provider = strings.TrimSpace(provider)
+	status = strings.TrimSpace(status)
+	if provider == "" {
+		provider = strings.TrimSpace(route.Hostname)
+	}
+
+	switch strings.ToLower(status) {
+	case "routed":
+		if route.TargetPort > 0 {
+			return fmt.Sprintf("routed to devcontainer %s on port %d", provider, route.TargetPort)
+		}
+		return fmt.Sprintf("routed to devcontainer %s", provider)
+	case "partial":
+		if route.TargetPort > 0 {
+			return fmt.Sprintf("partially routed to devcontainer %s on port %d", provider, route.TargetPort)
+		}
+		return fmt.Sprintf("partially routed to devcontainer %s", provider)
+	case "configured":
+		if provider != "" {
+			return fmt.Sprintf("tunnelled to load balancer %s", provider)
+		}
+		return "tunnelled to load balancer"
+	case "running":
+		if provider != "" {
+			return fmt.Sprintf("tunnelled to load balancer %s", provider)
+		}
+		return "tunnelled to load balancer"
+	case "pending":
+		if provider != "" {
+			return fmt.Sprintf("waiting for tunnel to load balancer %s", provider)
+		}
+		return "waiting for tunnel"
+	default:
+		return status
+	}
+}
+
+func publishedEndpointRows(routes []nginx.Route, diagnostics []ContainerDiagnostic, tunnelManager *TunnelManager) []PublishedEndpointRow {
+	if len(routes) == 0 {
+		return nil
+	}
+
+	statusByIdentity := make(map[string]string)
+	providerByIdentity := make(map[string]string)
+	for _, row := range diagnostics {
+		if row.Name == "" {
+			continue
+		}
+		identity := strings.TrimPrefix(row.Name, "/")
+		statusByIdentity[identity] = row.Status
+		providerByIdentity[identity] = row.Name
+	}
+	if tunnelManager != nil {
+		for _, entry := range tunnelManager.Snapshot() {
+			name := strings.TrimSpace(entry.Alias)
+			if name == "" {
+				name = strings.TrimSpace(entry.Host)
+			}
+			if name == "" {
+				name = entry.Name
+			}
+			status := tunnelEntryStatus(&entry)
+			if name != "" {
+				statusByIdentity[name] = status
+				providerByIdentity[name] = name
+			}
+			if entry.ID != "" {
+				identity := "aws-tunnel-" + entry.ID
+				statusByIdentity[identity] = status
+				providerByIdentity[identity] = name
+			}
+		}
+	}
+
+	seen := make(map[string]bool, len(routes))
+	out := make([]PublishedEndpointRow, 0, len(routes))
+	for _, route := range routes {
+		hostname := strings.TrimSpace(route.Hostname)
+		if hostname == "" {
+			continue
+		}
+		if seen[hostname] {
+			continue
+		}
+		if isInternalHomepageRoute(hostname) {
+			continue
+		}
+		seen[hostname] = true
+
+		provider := strings.TrimSpace(route.ContainerName)
+		if provider == "" {
+			provider = hostname
+		}
+		if resolvedProvider := providerByIdentity[strings.TrimPrefix(provider, "/")]; resolvedProvider != "" {
+			provider = resolvedProvider
+		}
+		status := statusByIdentity[strings.TrimPrefix(provider, "/")]
+		if status == "" {
+			status = statusByIdentity[strings.TrimPrefix(route.ContainerName, "/")]
+		}
+		if status == "" {
+			status = "configured"
+		}
+		status = formatHomepageStatus(route, provider, status)
+
+		out = append(out, PublishedEndpointRow{
+			Hostname: hostname,
+			Provider: provider,
+			Status:   status,
+		})
+	}
+	return out
+}
+
+func renderOpenInNewTabIcon() string {
+	return `<span class="new-tab-icon" aria-label="opens in new tab" title="opens in new tab">↗</span>`
+}
+
+func renderDebugPageHTML(rows []ContainerDiagnostic, revision uint64) string {
+	var b strings.Builder
+	b.WriteString("<!doctype html><html><head><meta charset=\"utf-8\"><title>Devcontainer Nginx: Debug</title>")
+	b.WriteString(renderStylesheetLink())
+	b.WriteString(renderFaviconLink())
+	b.WriteString("</head>")
+	b.WriteString(fmt.Sprintf("<body data-page=\"debug\" data-current-revision=\"%d\">", revision))
+	b.WriteString(renderPageHeader("Debug"))
+	b.WriteString("<table><thead><tr><th>Process</th><th>Status</th><th>Reason</th><th>Routes</th></tr></thead><tbody>")
+
+	if len(rows) == 0 {
+		b.WriteString("<tr><td colspan=\"4\">No running containers were considered.</td></tr>")
+	} else {
+		for _, row := range rows {
+			statusClass := "skip"
+			switch row.Status {
+			case "routed", "running":
+				statusClass = "ok"
+			case "partial":
+				statusClass = "partial"
+			}
+
+			b.WriteString("<tr><td>")
+			b.WriteString(renderContainerCell(row.Name, row.Metadata))
+			b.WriteString("</td><td class=\"")
+			b.WriteString(statusClass)
+			b.WriteString("\">")
+			b.WriteString(html.EscapeString(row.Status))
+			b.WriteString("</td><td>")
+			b.WriteString(html.EscapeString(row.Reason))
+			b.WriteString("</td><td>")
+			b.WriteString(renderRouteLinks(row.Routes))
+			b.WriteString("</td></tr>")
+		}
+	}
+
+	b.WriteString("</tbody></table>")
+	b.WriteString("<h2>Actions</h2><ul>")
+	b.WriteString("<li><a href=\"/aws-config\">Configure AWS credentials in this container</a></li>")
+	b.WriteString("<li><a href=\"/tunnels\">Start or stop tunnels to services</a></li>")
+	b.WriteString("<li><a href=\"/shell-launch\">Open a shell in a new tab</a></li>")
+	b.WriteString("</ul>")
+	b.WriteString(renderHelpSection("homepage"))
+	b.WriteString("<h2>Debugging Container Services</h2><ul>")
+	b.WriteString("<li><a href=\"/logs\">View logs</a></li>")
+	b.WriteString("<li><a href=\"/shell-command-generator\">Generate shell commands for bastion host access</a></li>")
+	b.WriteString("<li><a href=\"/nginx.conf\">Base nginx.conf</a></li>")
+	b.WriteString("<li><a href=\"/generated.conf\">Generated nginx config</a></li>")
+	b.WriteString("<li><a href=\"/nginx/config\">Full nginx config</a></li>")
+	b.WriteString("<li><a href=\"/containers\">Container config</a></li>")
+	b.WriteString("</ul>")
 	b.WriteString("<script src=\"/static/app.js\"></script>")
 	b.WriteString("</body></html>")
 	return b.String()

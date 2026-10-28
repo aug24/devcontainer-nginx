@@ -85,7 +85,11 @@ func TestRenderHomepageHTMLUsesSharedStaticAssets(t *testing.T) {
 		Status: "routed",
 		Reason: "container",
 		Routes: "frontend.local.dev -> 127.0.0.1:3000",
-	}}, 42)
+	}}, 42, []PublishedEndpointRow{{
+		Hostname: "frontend.local.dev",
+		Provider: "frontend",
+		Status:   "routed",
+	}})
 
 	if !strings.Contains(html, "data-page=\"homepage\"") {
 		t.Fatalf("homepage HTML missing page marker")
@@ -101,6 +105,9 @@ func TestRenderHomepageHTMLUsesSharedStaticAssets(t *testing.T) {
 	}
 	if strings.Contains(html, "<script>") {
 		t.Fatalf("homepage HTML still contains inline scripts")
+	}
+	if !strings.Contains(html, "frontend.local.dev") {
+		t.Fatalf("homepage HTML missing endpoint table row")
 	}
 }
 
