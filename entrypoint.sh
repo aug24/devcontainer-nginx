@@ -5,8 +5,9 @@ TLS_CERT="${TLS_CERT:-/etc/nginx/certs/wildcard.crt}"
 TLS_KEY="${TLS_KEY:-/etc/nginx/certs/wildcard.key}"
 GENERATED_CONFIG="${NGINX_CONFIG_PATH:-/etc/nginx/conf.d/generated.conf}"
 BASE_DOMAIN="${BASE_DOMAIN:-local.dev-gutools.co.uk}"
-LOCAL_CA_CERT="${LOCAL_CA_CERT:-/etc/nginx/mkcert/rootCA.pem}"
-LOCAL_CA_KEY="${LOCAL_CA_KEY:-/etc/nginx/mkcert/rootCA-key.pem}"
+LOCAL_CA_DIR="${LOCAL_CA_DIR:-/etc/nginx/mkcert}"
+LOCAL_CA_CERT="${LOCAL_CA_CERT:-${LOCAL_CA_DIR}/rootCA.pem}"
+LOCAL_CA_KEY="${LOCAL_CA_KEY:-${LOCAL_CA_DIR}/rootCA-key.pem}"
 
 mkdir -p "$(dirname "$TLS_CERT")" "$(dirname "$TLS_KEY")" "$(dirname "$GENERATED_CONFIG")"
 
@@ -25,14 +26,16 @@ if [ ! -f "$TLS_CERT" ] || [ ! -f "$TLS_KEY" ]; then
     EFFECTIVE_TLS_KEY="$DIAG_KEY"
   else
     if [ -f "$LOCAL_CA_CERT" ] && [ -f "$LOCAL_CA_KEY" ]; then
-      # Check if cert dir is writable; if not, use a temp dir
+      # Keep certificate coverage scoped to the current base domain only.
+      # This keeps the local TLS trust model simple: a single mkcert root CA,
+      # plus one wildcard certificate per BASE_DOMAIN.
       if ! sh -c "touch ${CERT_DIR}/.write-test && rm -f ${CERT_DIR}/.write-test" >/dev/null 2>&1; then
         mkdir -p /tmp/devcontainer-nginx-certs
         EFFECTIVE_TLS_CERT="/tmp/devcontainer-nginx-certs/wildcard.crt"
         EFFECTIVE_TLS_KEY="/tmp/devcontainer-nginx-certs/wildcard.key"
       fi
 
-      echo "Generating CA-signed wildcard certificate using mkcert"
+      echo "Generating wildcard certificate for *.${BASE_DOMAIN} using mkcert"
       CAROOT="$(dirname "$LOCAL_CA_CERT")" mkcert \
         -cert-file "$EFFECTIVE_TLS_CERT" \
         -key-file "$EFFECTIVE_TLS_KEY" \

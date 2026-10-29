@@ -73,6 +73,7 @@ func main() {
 	configGen := nginx.NewConfigGenerator(*nginxConfigPath, *tlsCert, *tlsKey)
 	homepageState := &DiagnosticsState{}
 	tunnelManager := NewTunnelManager()
+	tunnelManager.BindConfig(*baseDomain, configGen)
 	startHomepageServer(ctx, "/etc/nginx/nginx.conf", *nginxConfigPath, configGen, homepageState, tunnelManager, baseDomain)
 
 	identifier := discovery.NewIdentifier()
@@ -164,6 +165,8 @@ func reconcileRoutes(
 	if tunnelManager != nil {
 		routes = append(routes, tunnelManager.NginxRoutes(baseDomain)...)
 	}
+
+	routes = ensureRouteWildcardCerts(routes, baseDomain)
 
 	homepageState.Set(homepageRows)
 

@@ -39,6 +39,8 @@ type Route struct {
 	Protocol      string
 	VerifySSL     bool
 	VerifyName    string
+	CertPath      string
+	KeyPath       string
 }
 
 // ApplyRoutes stores the route set, renders config, and writes it atomically under one lock.
@@ -231,16 +233,17 @@ func (cg *ConfigGenerator) generateDefaultServerBlock() []string {
 
 // generateServerBlock generates HTTP and HTTPS server blocks for a single route.
 func (cg *ConfigGenerator) generateServerBlock(route Route) []string {
-	upstreamName := cg.sanitizeUpstreamName(route.Hostname)
-	protocol := strings.ToLower(strings.TrimSpace(route.Protocol))
+	resolvedRoute := cg.resolveRouteTLS(route)
+	upstreamName := cg.sanitizeUpstreamName(resolvedRoute.Hostname)
+	protocol := strings.ToLower(strings.TrimSpace(resolvedRoute.Protocol))
 	if protocol == "" {
 		protocol = "http"
 	}
-	verifySSL := route.VerifySSL
+	verifySSL := resolvedRoute.VerifySSL
 	if protocol != "https" {
 		verifySSL = false
 	}
-	verifyName := strings.TrimSpace(route.VerifyName)
+	verifyName := strings.TrimSpace(resolvedRoute.VerifyName)
 	if verifyName == "" {
 		verifyName = "$host"
 	}
@@ -286,15 +289,15 @@ func (cg *ConfigGenerator) generateServerBlock(route Route) []string {
 	)
 
 	lines := []string{
-		fmt.Sprintf("# Route: %s -> %s:%d", route.Hostname, route.TargetHost, route.TargetPort),
+		fmt.Sprintf("# Route: %s -> %s:%d", resolvedRoute.Hostname, resolvedRoute.TargetHost, resolvedRoute.TargetPort),
 		fmt.Sprintf("upstream %s {", upstreamName),
-		fmt.Sprintf("    server %s:%d;", route.TargetHost, route.TargetPort),
+		fmt.Sprintf("    server %s:%d;", resolvedRoute.TargetHost, resolvedRoute.TargetPort),
 		"}",
 		"",
 		"# HTTP (port 80)",
 		"server {",
 		"    listen 80;",
-		fmt.Sprintf("    server_name %s;", route.Hostname),
+		fmt.Sprintf("    server_name %s;", resolvedRoute.Hostname),
 		"",
 	}
 	lines = append(lines, proxyLocation...)
@@ -309,10 +312,10 @@ func (cg *ConfigGenerator) generateServerBlock(route Route) []string {
 		"# HTTPS (port 443)",
 		"server {",
 		"    listen 443 ssl;",
-		fmt.Sprintf("    server_name %s;", route.Hostname),
+		fmt.Sprintf("    server_name %s;", resolvedRoute.Hostname),
 		"",
-		fmt.Sprintf("    ssl_certificate %s;", cg.certPath),
-		fmt.Sprintf("    ssl_certificate_key %s;", cg.keyPath),
+		fmt.Sprintf("    ssl_certificate %s;", resolvedRoute.CertPath),
+		fmt.Sprintf("    ssl_certificate_key %s;", resolvedRoute.KeyPath),
 		"    http2 on;",
 		"",
 		"    # TLS configuration",
@@ -416,4 +419,15 @@ func (cg *ConfigGenerator) CertPath() string {
 
 func (cg *ConfigGenerator) KeyPath() string {
 	return cg.keyPath
+}
+
+func (cg *ConfigGenerator) resolveRouteTLS(route Route) Route {
+	resolved := route
+	if strings.TrimSpace(resolved.CertPath) == "" {
+		resolved.CertPath = cg.certPath
+	}
+	if strings.TrimSpace(resolved.KeyPath) == "" {
+		resolved.KeyPath = cg.keyPath
+	}
+	return resolved
 }

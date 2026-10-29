@@ -122,6 +122,8 @@ type TunnelManager struct {
 	config  AWSConfig
 	tunnels map[string]*TunnelEntry
 	process map[string]*exec.Cmd
+	configGen *nginx.ConfigGenerator
+	baseDomain string
 }
 
 func NewTunnelManager() *TunnelManager {
@@ -237,7 +239,35 @@ func (tm *TunnelManager) Snapshot() []TunnelEntry {
 	return out
 }
 
+func (tm *TunnelManager) BindConfig(baseDomain string, configGen *nginx.ConfigGenerator) {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	tm.baseDomain = strings.TrimSpace(baseDomain)
+	tm.configGen = configGen
+}
+
+func (tm *TunnelManager) RefreshConfig() {
+	tm.mu.Lock()
+	configGen := tm.configGen
+	baseDomain := tm.baseDomain
+	tm.mu.Unlock()
+	if configGen == nil || strings.TrimSpace(baseDomain) == "" {
+		return
+	}
+	tm.EnsureConfig(baseDomain, configGen)
+}
+
 func (tm *TunnelManager) EnsureConfig(baseDomain string, configGen *nginx.ConfigGenerator) {
+	if configGen == nil {
+		return
+	}
+	if strings.TrimSpace(baseDomain) != "" {
+		tm.mu.Lock()
+		tm.baseDomain = baseDomain
+		tm.configGen = configGen
+		tm.mu.Unlock()
+	}
+
 	routes := tm.NginxRoutes(baseDomain)
 	log.Printf("Tunnel config refresh: baseDomain=%q, tunnelCount=%d, routes=%d", baseDomain, len(tm.tunnels), len(routes))
 	for _, route := range routes {
@@ -261,6 +291,8 @@ func (tm *TunnelManager) EnsureConfig(baseDomain string, configGen *nginx.Config
 		seen[route.Hostname] = len(merged) - 1
 	}
 
+	merged = ensureRouteWildcardCerts(merged, baseDomain)
+
 	if err := configGen.ApplyRoutes(merged); err != nil {
 		log.Printf("failed to write merged tunnel config: %v", err)
 	}
@@ -281,9 +313,7 @@ func (tm *TunnelManager) NginxRoutes(baseDomain string) []nginx.Route {
 		if hostname == "" {
 			hostname = tunnel.Host
 		}
-		if !strings.Contains(hostname, ".") && strings.TrimSpace(baseDomain) != "" {
-			hostname = hostname + "." + strings.TrimSpace(baseDomain)
-		}
+		hostname = qualifyHostname(hostname, baseDomain)
 		out = append(out, nginx.Route{
 			ContainerName: "aws-tunnel-" + tunnel.ID,
 			Hostname:      hostname,
@@ -297,6 +327,17 @@ func (tm *TunnelManager) NginxRoutes(baseDomain string) []nginx.Route {
 	return out
 }
 
+func qualifyHostname(hostname, baseDomain string) string {
+	hostname = strings.TrimSpace(hostname)
+	baseDomain = strings.TrimSpace(baseDomain)
+	if hostname == "" || baseDomain == "" {
+		return hostname
+	}
+	if strings.EqualFold(hostname, baseDomain) || strings.HasSuffix(strings.ToLower(hostname), "."+strings.ToLower(baseDomain)) {
+		return hostname
+	}
+	return hostname + "." + baseDomain
+}
 
 func (tm *TunnelManager) Remove(id string) bool {
 	tm.mu.Lock()
@@ -343,99 +384,8 @@ func (tm *TunnelManager) Stop(id string) error {
 	}
 	tm.mu.Unlock()
 
+	tm.RefreshConfig()
 	return nil
-}
-
-func childrenOfPID(pid int) ([]int, error) {
-	output, err := exec.Command("ps", "-eo", "pid=,ppid=").Output()
-	if err != nil {
-		return nil, err
-	}
-
-	var children []int
-	for _, line := range strings.Split(string(output), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) != 2 {
-			continue
-		}
-		childPID, err := strconv.Atoi(fields[0])
-		if err != nil {
-			continue
-		}
-		parentPID, err := strconv.Atoi(fields[1])
-		if err != nil {
-			continue
-		}
-		if parentPID == pid {
-			children = append(children, childPID)
-		}
-	}
-	return children, nil
-}
-
-func killProcessTree(pid int) {
-	if pid <= 0 {
-		return
-	}
-
-	seen := map[int]bool{pid: true}
-	stack := []int{pid}
-	for len(stack) > 0 {
-		current := stack[len(stack)-1]
-		stack = stack[:len(stack)-1]
-		children, err := childrenOfPID(current)
-		if err != nil {
-			continue
-		}
-		for _, childPID := range children {
-			if !seen[childPID] {
-				seen[childPID] = true
-				stack = append(stack, childPID)
-			}
-		}
-	}
-
-	for processPID := range seen {
-		if processPID == pid {
-			_ = syscall.Kill(-pid, syscall.SIGTERM)
-		}
-		_ = syscall.Kill(processPID, syscall.SIGTERM)
-	}
-
-	time.Sleep(200 * time.Millisecond)
-
-	for processPID := range seen {
-		if processPID == pid {
-			_ = syscall.Kill(-pid, syscall.SIGKILL)
-		}
-		if err := syscall.Kill(processPID, 0); err != nil && errors.Is(err, syscall.ESRCH) {
-			continue
-		}
-		_ = syscall.Kill(processPID, syscall.SIGKILL)
-	}
-}
-
-func (tm *TunnelManager) stopProcessByID(id string) {
-	tm.mu.Lock()
-	cmd, ok := tm.process[id]
-	tm.mu.Unlock()
-	if !ok || cmd == nil || cmd.Process == nil {
-		return
-	}
-
-	killProcessTree(cmd.Process.Pid)
-
-	tm.mu.Lock()
-	if current, exists := tm.process[id]; exists && current == cmd {
-		delete(tm.process, id)
-	}
-	tm.mu.Unlock()
-}
-
-func (tm *TunnelManager) markTunnelExit(id string, cmd *exec.Cmd, err error) {
-	_ = id
-	_ = cmd
-	_ = err
 }
 
 func (tm *TunnelManager) Create(request TunnelRequest) (*TunnelEntry, error) {
@@ -573,6 +523,7 @@ func (tm *TunnelManager) Start(id string) error {
 			current.Status = "stopped"
 			current.LastOutput = "tunnel stopped by user"
 			tm.mu.Unlock()
+			tm.RefreshConfig()
 			return
 		}
 		output := strings.TrimSpace(stdout.String() + "\n" + stderr.String())
@@ -584,6 +535,7 @@ func (tm *TunnelManager) Start(id string) error {
 		current.Status = "failed"
 		current.LastOutput = output
 		tm.mu.Unlock()
+		tm.RefreshConfig()
 	}()
 
 	tm.mu.Lock()
@@ -595,6 +547,7 @@ func (tm *TunnelManager) Start(id string) error {
 	}
 	tm.mu.Unlock()
 	log.Printf("Tunnel launched: id=%s name=%q alias=%q status=%s output=%q", id, entry.Name, entry.Alias, entry.Status, entry.LastOutput)
+	tm.RefreshConfig()
 	return nil
 }
 
@@ -651,9 +604,7 @@ func tunnelDiagnostics(tunnelManager *TunnelManager, baseDomain string) []Contai
 		if hostName == "" {
 			hostName = entry.Host
 		}
-		if !strings.Contains(hostName, ".") && strings.TrimSpace(baseDomain) != "" {
-			hostName = hostName + "." + strings.TrimSpace(baseDomain)
-		}
+		hostName = qualifyHostname(hostName, baseDomain)
 		reason := "aws tunnel"
 		if entry.Alb != "" {
 			reason = fmt.Sprintf("aws tunnel -> %s:%d", entry.Alb, entry.TargetPort)
@@ -856,3 +807,96 @@ func startAWSProfileCleanup(ctx context.Context, interval time.Duration) {
 		}
 	}()
 }
+
+func childrenOfPID(pid int) ([]int, error) {
+	output, err := exec.Command("ps", "-eo", "pid=,ppid=").Output()
+	if err != nil {
+		return nil, err
+	}
+
+	var children []int
+	for _, line := range strings.Split(string(output), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 2 {
+			continue
+		}
+		childPID, err := strconv.Atoi(fields[0])
+		if err != nil {
+			continue
+		}
+		parentPID, err := strconv.Atoi(fields[1])
+		if err != nil {
+			continue
+		}
+		if parentPID == pid {
+			children = append(children, childPID)
+		}
+	}
+	return children, nil
+}
+
+func killProcessTree(pid int) {
+	if pid <= 0 {
+		return
+	}
+
+	seen := map[int]bool{pid: true}
+	stack := []int{pid}
+	for len(stack) > 0 {
+		current := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		children, err := childrenOfPID(current)
+		if err != nil {
+			continue
+		}
+		for _, childPID := range children {
+			if !seen[childPID] {
+				seen[childPID] = true
+				stack = append(stack, childPID)
+			}
+		}
+	}
+
+	for processPID := range seen {
+		if processPID == pid {
+			_ = syscall.Kill(-pid, syscall.SIGTERM)
+		}
+		_ = syscall.Kill(processPID, syscall.SIGTERM)
+	}
+
+	time.Sleep(200 * time.Millisecond)
+
+	for processPID := range seen {
+		if processPID == pid {
+			_ = syscall.Kill(-pid, syscall.SIGKILL)
+		}
+		if err := syscall.Kill(processPID, 0); err != nil && errors.Is(err, syscall.ESRCH) {
+			continue
+		}
+		_ = syscall.Kill(processPID, syscall.SIGKILL)
+	}
+}
+
+func (tm *TunnelManager) stopProcessByID(id string) {
+	tm.mu.Lock()
+	cmd, ok := tm.process[id]
+	tm.mu.Unlock()
+	if !ok || cmd == nil || cmd.Process == nil {
+		return
+	}
+
+	killProcessTree(cmd.Process.Pid)
+
+	tm.mu.Lock()
+	if current, exists := tm.process[id]; exists && current == cmd {
+		delete(tm.process, id)
+	}
+	tm.mu.Unlock()
+}
+
+func (tm *TunnelManager) markTunnelExit(id string, cmd *exec.Cmd, err error) {
+	_ = id
+	_ = cmd
+	_ = err
+}
+
