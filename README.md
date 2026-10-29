@@ -74,6 +74,7 @@ This is especially important when the devcontainer runs multiple services that n
 ## Documentation
 
 - [Quick Start Guide](./docs/QUICK-START.md) — install, run, and access apps
+- [Shell Access Guide](./docs/SHELLS.md) — browser shell usage and the 10-minute timeout
 - [Configuration Reference](./docs/CONFIGURATION.md) — environment variables and runtime settings
 - [Architecture](./docs/ARCHITECTURE.md) — component and request flow details
 - [Building](./docs/BUILDING.md) — local and Docker builds

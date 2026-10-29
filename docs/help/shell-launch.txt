@@ -1,0 +1,15 @@
+Shell launch page
+
+This page opens a browser terminal attached to the devcontainer-nginx container itself.
+
+How to use it:
+- Choose the AWS profile and region to use for any environment variables that need to be available in the local container shell.
+- Click Open shell in new tab.
+- Use the terminal for quick debugging, config inspection, and command execution in the running container.
+
+Requirements:
+- The container must already be running and the local shell route must be enabled.
+- A profile/region is optional, but it helps if your environment expects AWS credentials to already be loaded.
+
+This is different from the bastion shell flow: the local shell stays inside the proxy container, while the remote shell connects to a bastion-host EC2 instance by AWS tag matching.
+

@@ -1,0 +1,16 @@
+Remote bastion launch
+
+This page selects the AWS profile, region, and EC2 target metadata used to start the remote bastion shell.
+
+How to use it:
+- Choose the profile and region for the environment you want to access.
+- Enter the stack, stage, and app values that identify the target EC2 instance.
+- Click Open bastion shell in new tab to open the remote SSM session.
+
+Requirements:
+- AWS credentials for the selected profile must already be valid in this container.
+- The EC2 instance must match the provided app, stack, and stage metadata.
+- The target environment must allow SSM access from the current AWS identity.
+
+This is the setup page for the remote shell flow. The live session page itself only explains the 10 minute idle timeout.
+

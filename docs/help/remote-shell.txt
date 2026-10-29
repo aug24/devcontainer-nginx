@@ -1,0 +1,17 @@
+Remote Shell page
+
+This page opens an interactive AWS bastion session by resolving the matching EC2 instance from the configured AWS metadata and then starting an SSM session to it.
+
+How to use it:
+- Choose the AWS profile and region for the target environment.
+- Enter the app, stack, and stage values used to identify the EC2 instance.
+- Open the session in a new tab to keep the local shell flow separate from the remote bastion flow.
+- Use the terminal like a normal shell once the AWS connection is established.
+
+Requirements:
+- AWS credentials and profile configuration must already be valid in this container.
+- The selected instance must match the app, stack, and stage metadata used by your environment.
+- The bastion host must be reachable through the configured AWS account and region.
+
+If the session fails, check the AWS profile, region, and the logs page for SSM or EC2 resolution errors.
+

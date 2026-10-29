@@ -794,6 +794,7 @@ func (tunnelManager *TunnelManager) ShellWS(w http.ResponseWriter, r *http.Reque
 		log.Printf("shell websocket upgrade failed: remote=%s profile=%s region=%s err=%v", r.RemoteAddr, profile, region, err)
 		return
 	}
+	configureWebsocketKeepalive(conn, 10*time.Minute)
 	defer func() {
 		log.Printf("shell websocket disconnect: remote=%s profile=%s region=%s", r.RemoteAddr, profile, region)
 		_ = conn.Close()
@@ -848,6 +849,7 @@ func (tunnelManager *TunnelManager) ShellWS(w http.ResponseWriter, r *http.Reque
 			log.Printf("shell websocket read ended: remote=%s profile=%s region=%s err=%v", r.RemoteAddr, profile, region, err)
 			return
 		}
+		_ = conn.SetReadDeadline(time.Now().Add(10 * time.Minute))
 		switch messageType {
 		case websocket.TextMessage:
 			if len(data) > 0 {
@@ -874,128 +876,215 @@ func (tunnelManager *TunnelManager) ShellWS(w http.ResponseWriter, r *http.Reque
 	}
 }
 
-func (tunnelManager *TunnelManager) RegisterShellRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("/shell", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		profile := strings.TrimSpace(r.URL.Query().Get("profile"))
-		region := strings.TrimSpace(r.URL.Query().Get("region"))
-		if profile == "" || region == "" {
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			_, _ = w.Write([]byte(renderShellLaunchPage()))
-			return
-		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = w.Write([]byte(renderShellPage(profile, region)))
-	})
-
-	mux.HandleFunc("/shell-launch", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = w.Write([]byte(renderShellLaunchPage()))
-	})
-
-	mux.HandleFunc("/shell/ws", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		profile := strings.TrimSpace(r.URL.Query().Get("profile"))
-		region := strings.TrimSpace(r.URL.Query().Get("region"))
-		if profile == "" || region == "" {
-			http.Error(w, "profile and region are required", http.StatusBadRequest)
-			return
-		}
-		log.Printf("shell websocket connect: remote=%s profile=%s region=%s", r.RemoteAddr, profile, region)
-		upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
-		conn, err := upgrader.Upgrade(w, r, nil)
-		if err != nil {
-			log.Printf("shell websocket upgrade failed: remote=%s profile=%s region=%s err=%v", r.RemoteAddr, profile, region, err)
-			return
-		}
-		defer func() {
-			log.Printf("shell websocket disconnect: remote=%s profile=%s region=%s", r.RemoteAddr, profile, region)
-			_ = conn.Close()
-		}()
-
-		env := append(os.Environ(),
-			"AWS_PROFILE="+profile,
-			"AWS_REGION="+region,
-			"AWS_DEFAULT_REGION="+region,
-			"TERM=xterm-256color",
-			"COLORTERM=truecolor",
-		)
-		cmd := exec.Command("/bin/bash", "--login", "-i")
-		cmd.Env = env
-		cmd.Dir = "/workspace"
-		if _, err := os.Stat(cmd.Dir); err != nil {
-			cmd.Dir = "/"
-		}
-		log.Printf("starting shell PTY: remote=%s profile=%s region=%s dir=%s", r.RemoteAddr, profile, region, cmd.Dir)
-		ptyFile, err := pty.Start(cmd)
-		if err != nil {
-			log.Printf("failed to start shell: remote=%s profile=%s region=%s err=%v", r.RemoteAddr, profile, region, err)
-			_ = conn.WriteMessage(websocket.TextMessage, []byte("Failed to start shell: "+err.Error()+"\r\n"))
-			return
-		}
-		defer func() {
-			log.Printf("killing shell PTY: remote=%s profile=%s region=%s pid=%d", r.RemoteAddr, profile, region, cmd.Process.Pid)
-			_ = cmd.Process.Kill()
-			_ = ptyFile.Close()
-		}()
-
-		go func() {
-			buf := make([]byte, 4096)
-			for {
-				n, err := ptyFile.Read(buf)
-				if n > 0 {
-					if err := conn.WriteMessage(websocket.BinaryMessage, buf[:n]); err != nil {
-						log.Printf("shell websocket write failed: remote=%s profile=%s region=%s err=%v", r.RemoteAddr, profile, region, err)
-						return
-					}
-				}
-				if err != nil {
-					log.Printf("shell PTY reader ended: remote=%s profile=%s region=%s err=%v", r.RemoteAddr, profile, region, err)
-					return
-				}
-			}
-		}()
-
-		for {
-			messageType, data, err := conn.ReadMessage()
-			if err != nil {
-				log.Printf("shell websocket read ended: remote=%s profile=%s region=%s err=%v", r.RemoteAddr, profile, region, err)
+func configureWebsocketKeepalive(conn *websocket.Conn, idleTimeout time.Duration) {
+	if idleTimeout <= 0 {
+		idleTimeout = 10 * time.Minute
+	}
+	if err := conn.SetReadDeadline(time.Now().Add(idleTimeout)); err != nil {
+		log.Printf("failed to set websocket read deadline: %v", err)
+		return
+	}
+	pingInterval := 30 * time.Second
+	if pingInterval >= idleTimeout {
+		pingInterval = idleTimeout / 2
+	}
+	if pingInterval <= 0 {
+		pingInterval = 30 * time.Second
+	}
+	go func() {
+		ticker := time.NewTicker(pingInterval)
+		defer ticker.Stop()
+		for range ticker.C {
+			if err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(5*time.Second)); err != nil {
 				return
 			}
-			switch messageType {
-			case websocket.TextMessage:
-				if len(data) > 0 {
-					var resize struct {
-						Type string `json:"type"`
-						Cols int    `json:"cols"`
-						Rows int    `json:"rows"`
-					}
-					if json.Unmarshal(data, &resize) == nil && resize.Type == "resize" && resize.Cols > 0 && resize.Rows > 0 {
-						pty.Setsize(ptyFile, &pty.Winsize{Rows: uint16(resize.Rows), Cols: uint16(resize.Cols)})
-						continue
-					}
-				}
-				if _, err := ptyFile.Write(data); err != nil {
-					log.Printf("shell PTY write failed: remote=%s profile=%s region=%s err=%v", r.RemoteAddr, profile, region, err)
-					return
-				}
-			case websocket.BinaryMessage:
-				if _, err := ptyFile.Write(data); err != nil {
-					log.Printf("shell PTY binary write failed: remote=%s profile=%s region=%s err=%v", r.RemoteAddr, profile, region, err)
+		}
+	}()
+}
+
+func (tunnelManager *TunnelManager) RemoteShell(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	profile := strings.TrimSpace(r.URL.Query().Get("profile"))
+	region := strings.TrimSpace(r.URL.Query().Get("region"))
+	stack := strings.TrimSpace(r.URL.Query().Get("stack"))
+	stage := strings.TrimSpace(r.URL.Query().Get("stage"))
+	app := strings.TrimSpace(r.URL.Query().Get("app"))
+	if profile == "" || region == "" || stack == "" || stage == "" || app == "" {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(renderRemoteShellLaunchPage()))
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = w.Write([]byte(renderRemoteShellPage(profile, region, stack, stage, app)))
+}
+
+func (tunnelManager *TunnelManager) RemoteShellLaunch(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = w.Write([]byte(renderRemoteShellLaunchPage()))
+}
+
+func (tunnelManager *TunnelManager) RemoteShellWS(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	profile := strings.TrimSpace(r.URL.Query().Get("profile"))
+	region := strings.TrimSpace(r.URL.Query().Get("region"))
+	stack := strings.TrimSpace(r.URL.Query().Get("stack"))
+	stage := strings.TrimSpace(r.URL.Query().Get("stage"))
+	app := strings.TrimSpace(r.URL.Query().Get("app"))
+	if profile == "" || region == "" || stack == "" || stage == "" || app == "" {
+		http.Error(w, "profile, region, stack, stage and app are required", http.StatusBadRequest)
+		return
+	}
+	log.Printf("remote shell websocket connect: remote=%s profile=%s region=%s stack=%s stage=%s app=%s", r.RemoteAddr, profile, region, stack, stage, app)
+	instanceID, err := findEC2InstanceID(profile, region, stack, stage, app)
+	if err != nil {
+		log.Printf("remote shell lookup failed: remote=%s profile=%s region=%s stack=%s stage=%s app=%s err=%v", r.RemoteAddr, profile, region, stack, stage, app, err)
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	if instanceID == "" {
+		msg := fmt.Sprintf("No running EC2 instance found for app=%s stack=%s stage=%s", app, stack, stage)
+		log.Printf("remote shell no instance: remote=%s profile=%s region=%s stack=%s stage=%s app=%s", r.RemoteAddr, profile, region, stack, stage, app)
+		http.Error(w, msg, http.StatusNotFound)
+		return
+	}
+
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Printf("remote shell websocket upgrade failed: remote=%s profile=%s region=%s stack=%s stage=%s app=%s err=%v", r.RemoteAddr, profile, region, stack, stage, app, err)
+		return
+	}
+	configureWebsocketKeepalive(conn, 10*time.Minute)
+	defer func() {
+		log.Printf("remote shell websocket disconnect: remote=%s profile=%s region=%s stack=%s stage=%s app=%s instance=%s", r.RemoteAddr, profile, region, stack, stage, app, instanceID)
+		_ = conn.Close()
+	}()
+
+	env := append(os.Environ(),
+		"AWS_PROFILE="+profile,
+		"AWS_REGION="+region,
+		"AWS_DEFAULT_REGION="+region,
+		"TERM=xterm-256color",
+		"COLORTERM=truecolor",
+		"REMOTE_SHELL_INSTANCE_ID="+instanceID,
+		"REMOTE_SHELL_STACK="+stack,
+		"REMOTE_SHELL_STAGE="+stage,
+		"REMOTE_SHELL_APP="+app,
+	)
+	cmd := exec.Command("aws", "ssm", "start-session",
+		"--profile", profile,
+		"--region", region,
+		"--target", instanceID,
+	)
+	cmd.Env = env
+	cmd.Dir = "/workspace"
+	if _, err := os.Stat(cmd.Dir); err != nil {
+		cmd.Dir = "/"
+	}
+	log.Printf("starting remote shell PTY: remote=%s profile=%s region=%s stack=%s stage=%s app=%s instance=%s dir=%s", r.RemoteAddr, profile, region, stack, stage, app, instanceID, cmd.Dir)
+	ptyFile, err := pty.Start(cmd)
+	if err != nil {
+		log.Printf("failed to start remote shell: remote=%s profile=%s region=%s stack=%s stage=%s app=%s instance=%s err=%v", r.RemoteAddr, profile, region, stack, stage, app, instanceID, err)
+		_ = conn.WriteMessage(websocket.TextMessage, []byte("Failed to start remote shell: "+err.Error()+"\r\n"))
+		return
+	}
+	defer func() {
+		log.Printf("killing remote shell PTY: remote=%s profile=%s region=%s stack=%s stage=%s app=%s instance=%s pid=%d", r.RemoteAddr, profile, region, stack, stage, app, instanceID, cmd.Process.Pid)
+		_ = cmd.Process.Kill()
+		_ = ptyFile.Close()
+	}()
+
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			n, err := ptyFile.Read(buf)
+			if n > 0 {
+				if err := conn.WriteMessage(websocket.BinaryMessage, buf[:n]); err != nil {
+					log.Printf("remote shell websocket write failed: remote=%s profile=%s region=%s stack=%s stage=%s app=%s instance=%s err=%v", r.RemoteAddr, profile, region, stack, stage, app, instanceID, err)
 					return
 				}
 			}
+			if err != nil {
+				log.Printf("remote shell PTY reader ended: remote=%s profile=%s region=%s stack=%s stage=%s app=%s instance=%s err=%v", r.RemoteAddr, profile, region, stack, stage, app, instanceID, err)
+				return
+			}
 		}
-	})
+	}()
+
+	for {
+		messageType, data, err := conn.ReadMessage()
+		if err != nil {
+			log.Printf("remote shell websocket read ended: remote=%s profile=%s region=%s stack=%s stage=%s app=%s instance=%s err=%v", r.RemoteAddr, profile, region, stack, stage, app, instanceID, err)
+			return
+		}
+		_ = conn.SetReadDeadline(time.Now().Add(10 * time.Minute))
+		switch messageType {
+		case websocket.TextMessage:
+			if len(data) > 0 {
+				var resize struct {
+					Type string `json:"type"`
+					Cols int    `json:"cols"`
+					Rows int    `json:"rows"`
+				}
+				if json.Unmarshal(data, &resize) == nil && resize.Type == "resize" && resize.Cols > 0 && resize.Rows > 0 {
+					pty.Setsize(ptyFile, &pty.Winsize{Rows: uint16(resize.Rows), Cols: uint16(resize.Cols)})
+					continue
+				}
+			}
+			if _, err := ptyFile.Write(data); err != nil {
+				log.Printf("remote shell PTY write failed: remote=%s profile=%s region=%s stack=%s stage=%s app=%s instance=%s err=%v", r.RemoteAddr, profile, region, stack, stage, app, instanceID, err)
+				return
+			}
+		case websocket.BinaryMessage:
+			if _, err := ptyFile.Write(data); err != nil {
+				log.Printf("remote shell PTY binary write failed: remote=%s profile=%s region=%s stack=%s stage=%s app=%s instance=%s err=%v", r.RemoteAddr, profile, region, stack, stage, app, instanceID, err)
+				return
+			}
+		}
+	}
 }
 
+func findEC2InstanceID(profile, region, stack, stage, app string) (string, error) {
+	if strings.TrimSpace(profile) == "" || strings.TrimSpace(region) == "" || strings.TrimSpace(stack) == "" || strings.TrimSpace(stage) == "" || strings.TrimSpace(app) == "" {
+		return "", fmt.Errorf("profile, region, stack, stage and app are required")
+	}
+	cmd := exec.Command("aws", "ec2", "describe-instances",
+		"--profile", profile,
+		"--region", region,
+		"--filters",
+		"Name=tag:App,Values="+app,
+		"Name=tag:Stack,Values="+stack,
+		"Name=tag:Stage,Values="+stage,
+		"Name=instance-state-name,Values=running",
+		"--query", "Reservations[].Instances[] | sort_by(@, &LaunchTime)[-1].InstanceId",
+		"--output", "text",
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("aws ec2 describe-instances: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	id := strings.TrimSpace(string(out))
+	if id == "" || id == "None" {
+		return "", nil
+	}
+	return id, nil
+}
+
+func (tunnelManager *TunnelManager) RegisterShellRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("/shell", tunnelManager.Shell)
+	mux.HandleFunc("/shell-launch", tunnelManager.ShellLaunch)
+	mux.HandleFunc("/shell/ws", tunnelManager.ShellWS)
+	mux.HandleFunc("/remote-shell", tunnelManager.RemoteShell)
+	mux.HandleFunc("/remote-shell-launch", tunnelManager.RemoteShellLaunch)
+	mux.HandleFunc("/remote-shell/ws", tunnelManager.RemoteShellWS)
+}

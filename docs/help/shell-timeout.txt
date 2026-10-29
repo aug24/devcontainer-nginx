@@ -1,0 +1,11 @@
+Shell idle timeout
+
+The browser shell session is kept alive with websocket pinging and a 10 minute inactivity window.
+
+What this means:
+- the terminal stays connected while you are actively using it
+- if the session is idle for 10 minutes, the websocket will disconnect
+- reconnect from the relevant shell launch page to start a fresh terminal session
+
+This timeout is intentionally longer than the default websocket idle timeout so short periods of inactivity do not drop the session unexpectedly.
+
