@@ -586,11 +586,17 @@ func publishedEndpointRows(routes []nginx.Route, diagnostics []ContainerDiagnost
 			if name != "" {
 				statusByIdentity[name] = status
 				providerByIdentity[name] = name
+				if strings.TrimSpace(entry.Alb) != "" {
+					providerByIdentity[name] = entry.Alb
+				}
 			}
 			if entry.ID != "" {
 				identity := "aws-tunnel-" + entry.ID
 				statusByIdentity[identity] = status
 				providerByIdentity[identity] = name
+				if strings.TrimSpace(entry.Alb) != "" {
+					providerByIdentity[identity] = entry.Alb
+				}
 			}
 		}
 	}
