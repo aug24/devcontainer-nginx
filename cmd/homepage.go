@@ -63,6 +63,14 @@ func diagnoseContainer(
 	resolver *discovery.NetworkResolver,
 	baseDomain string,
 ) ([]nginx.Route, ContainerDiagnostic) {
+	log.Printf("Evaluating container %s: labels=%v exposed=%v publishedKeys=%v networks=%v\n",
+		containerInfo.Name,
+		containerInfo.Labels,
+		containerInfo.ExposedPorts,
+		keysOfPublishedPorts(containerInfo.PublishedPorts),
+		containerInfo.Networks,
+	)
+
 	forwardedPorts, _ := extractDiagnosticsPortMetadata(containerInfo.Labels)
 	forwardedSet := make(map[int]bool, len(forwardedPorts))
 	for _, port := range forwardedPorts {
@@ -75,14 +83,19 @@ func diagnoseContainer(
 		Metadata: summarizeContainerMetadata(containerInfo),
 	}
 
-	if !identifier.IsDevContainer(containerInfo.Name, containerInfo.Labels) {
+	isDev := identifier.IsDevContainer(containerInfo.Name, containerInfo.Labels)
+	log.Printf("Container %s isDevContainer=%t\n", containerInfo.Name, isDev)
+	if !isDev {
 		diag.Reason = "not identified as a dev container"
 		return nil, diag
 	}
 
 	if len(containerInfo.Networks) == 0 {
-		diag.Reason = "no networks available"
-		return nil, diag
+		forwardedPorts, _ := extractDiagnosticsPortMetadata(containerInfo.Labels)
+		if len(containerInfo.PublishedPorts) == 0 && len(forwardedPorts) == 0 {
+			diag.Reason = "no networks available"
+			return nil, diag
+		}
 	}
 
 	targets := identifier.ExtractRouteTargets(
@@ -91,6 +104,7 @@ func diagnoseContainer(
 		containerInfo.ExposedPorts,
 		containerInfo.PublishedPorts,
 	)
+	log.Printf("Container %s route targets: %#v\n", containerInfo.Name, targets)
 	if len(targets) == 0 {
 		diag.Reason = "no route targets found"
 		return nil, diag
@@ -120,6 +134,7 @@ func diagnoseContainer(
 				}
 				log.Printf("Resolved route via forwarded port: %s -> host.docker.internal:%d\n", hostname, target.ApplicationPort)
 			} else {
+				log.Printf("Skipping resolved route for %s/%d: no shared network and not forwarded\n", containerInfo.Name, target.ApplicationPort)
 				continue
 			}
 		}
@@ -145,6 +160,15 @@ func diagnoseContainer(
 	}
 	diag.Routes = strings.Join(routeDetails, "; ")
 	return routes, diag
+}
+
+func keysOfPublishedPorts(m map[string][]discovery.PortBinding) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func devcontainerModelLabelKeys(labels map[string]string) []string {
@@ -521,24 +545,47 @@ func isInternalHomepageRoute(hostname string) bool {
 	return strings.EqualFold(base, "devcontainer-nginx") || strings.HasPrefix(strings.ToLower(base), "devcontainer-nginx.")
 }
 
+func extractHostnamePort(hostname string) int {
+	hostname = strings.TrimSpace(hostname)
+	hostname = strings.TrimPrefix(hostname, "http://")
+	hostname = strings.TrimPrefix(hostname, "https://")
+	if hostname == "" {
+		return 0
+	}
+	first := strings.SplitN(hostname, ".", 2)[0]
+	if first == "" {
+		return 0
+	}
+	var port int
+	if _, err := fmt.Sscanf(first, "%d", &port); err != nil || port <= 0 {
+		return 0
+	}
+	return port
+}
+
 func formatHomepageStatus(route nginx.Route, provider, status string) string {
 	provider = strings.TrimSpace(provider)
 	status = strings.TrimSpace(status)
 	if provider == "" {
 		provider = strings.TrimSpace(route.Hostname)
 	}
+	displayPort := route.TargetPort
+	if hostPort := extractHostnamePort(route.Hostname); hostPort > 0 {
+		displayPort = hostPort
+	}
 
 	switch strings.ToLower(status) {
 	case "routed":
-		if route.TargetPort > 0 {
-			return fmt.Sprintf("routed to devcontainer %s on port %d", provider, route.TargetPort)
+		if displayPort > 0 {
+			return fmt.Sprintf("routed to container %s on port %d", provider, displayPort)
 		}
-		return fmt.Sprintf("routed to devcontainer %s", provider)
+		return fmt.Sprintf("routed to container %s", provider)
 	case "partial":
-		if route.TargetPort > 0 {
-			return fmt.Sprintf("partially routed to devcontainer %s on port %d", provider, route.TargetPort)
+		if displayPort > 0 {
+			return fmt.Sprintf("partially routed to container %s on port %d", provider, displayPort)
 		}
-		return fmt.Sprintf("partially routed to devcontainer %s", provider)
+		return fmt.Sprintf("partially routed to container %s", provider)
+
 	case "configured":
 		if provider != "" {
 			return fmt.Sprintf("tunnelled to load balancer %s", provider)

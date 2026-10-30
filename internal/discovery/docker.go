@@ -108,6 +108,8 @@ func (dc *DockerClient) parseContainer(c types.Container) ContainerInfo {
 		}
 	}
 
+	log.Printf("parseContainer %s: exposed=%v published=%v labels=%v\n", name, exposedPorts, publishedPorts, c.Labels)
+
 	// Get networks from inspect
 	networks := []string{}
 	for netName := range c.NetworkSettings.Networks {
@@ -161,15 +163,21 @@ func (dc *DockerClient) InspectContainer(ctx context.Context, containerID string
 	publishedPorts := make(map[string][]PortBinding)
 	if resp.HostConfig.PortBindings != nil {
 		for portKey, bindings := range resp.HostConfig.PortBindings {
+			key := portKey.Port()
+			if key == "" {
+				key = fmt.Sprintf("%s/tcp", portKey.Port())
+			}
 			for _, binding := range bindings {
 				b := PortBinding{
 					HostIP:   binding.HostIP,
 					HostPort: binding.HostPort,
 				}
-				publishedPorts[portKey.Port()] = append(publishedPorts[portKey.Port()], b)
+				publishedPorts[key] = append(publishedPorts[key], b)
 			}
 		}
 	}
+
+	log.Printf("InspectContainer %s: exposed=%v published=%v labels=%v\n", name, exposedPorts, publishedPorts, resp.Config.Labels)
 
 	// Get networks
 	networks := []string{}

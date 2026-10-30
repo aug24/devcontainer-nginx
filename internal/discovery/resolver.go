@@ -3,6 +3,7 @@ package discovery
 import (
 	"fmt"
 	"log"
+	"strings"
 	"slices"
 )
 
@@ -69,7 +70,24 @@ func (nr *NetworkResolver) ResolveRoute(
 		return route
 	}
 
-	// Second priority: published host port
+	// Second priority: honor a hostname-prefixed host port such as 8082.example.com
+	if hostPort := extractHostnamePort(hostname); hostPort > 0 {
+		route := &ResolvedRoute{
+			ContainerName: containerName,
+			ContainerID:   containerID,
+			Hostname:      hostname,
+			TargetHost:    "host.docker.internal",
+			TargetPort:    hostPort,
+			Network:       "",
+		}
+		log.Printf(
+			"Resolved route via hostname port: %s -> host.docker.internal:%d\n",
+			hostname, hostPort,
+		)
+		return route
+	}
+
+	// Third priority: published host port
 	hostPort := extractHostPort(publishedPorts, appPort)
 	if hostPort > 0 {
 		route := &ResolvedRoute{
@@ -99,11 +117,8 @@ func (nr *NetworkResolver) findSharedNetworks(containerNetworks map[string]Netwo
 	var shared []string
 	for networkName := range containerNetworks {
 		if _, ok := nr.proxyNetworks[networkName]; ok {
-			// Prefer user-defined networks
-			if !isDefaultNetwork(networkName) {
-				shared = append(shared, networkName)
-				log.Printf("Found shared network: %s\n", networkName)
-			}
+			shared = append(shared, networkName)
+			log.Printf("Found shared network: %s\n", networkName)
 		}
 	}
 	return shared
@@ -118,17 +133,40 @@ func isDefaultNetwork(name string) bool {
 // extractHostPort extracts host port mapping for container port.
 // Returns 0 if not found.
 func extractHostPort(publishedPorts map[string][]PortBinding, containerPort int) int {
-	tcpKey := fmt.Sprintf("%d/tcp", containerPort)
-
-	if bindings, ok := publishedPorts[tcpKey]; ok {
-		if len(bindings) > 0 && bindings[0].HostPort != "" {
-			var hostPort int
-			fmt.Sscanf(bindings[0].HostPort, "%d", &hostPort)
-			return hostPort
+	for _, tcpKey := range []string{
+		fmt.Sprintf("%d/tcp", containerPort),
+		fmt.Sprintf("%d", containerPort),
+	} {
+		if bindings, ok := publishedPorts[tcpKey]; ok {
+			if len(bindings) > 0 && bindings[0].HostPort != "" {
+				var hostPort int
+				fmt.Sscanf(bindings[0].HostPort, "%d", &hostPort)
+				return hostPort
+			}
 		}
 	}
 
 	return 0
+}
+
+// extractHostnamePort extracts host port mapping for container port.
+// Returns 0 if not found.
+func extractHostnamePort(hostname string) int {
+	hostname = strings.TrimSpace(hostname)
+	hostname = strings.TrimPrefix(hostname, "http://")
+	hostname = strings.TrimPrefix(hostname, "https://")
+	if hostname == "" {
+		return 0
+	}
+	first := strings.SplitN(hostname, ".", 2)[0]
+	if first == "" {
+		return 0
+	}
+	var port int
+	if _, err := fmt.Sscanf(first, "%d", &port); err != nil || port <= 0 {
+		return 0
+	}
+	return port
 }
 
 // mapKeys returns the keys of a map as a slice.

@@ -1,5 +1,10 @@
 (function () {
   function setupHomepage() {
+    const body = document.body;
+    if (!body || body.dataset.page !== 'homepage') {
+      return;
+    }
+
     const labels = document.querySelectorAll('.container-label');
     if (!labels.length) {
       return;
@@ -30,15 +35,16 @@
       });
     });
 
-    document.addEventListener('click', (event) => {
-      document.querySelectorAll('.container-label').forEach((label) => {
-        if (!label.contains(event.target)) {
-          label.classList.remove('open');
-        }
+    if (labels.length) {
+      document.addEventListener('click', (event) => {
+        document.querySelectorAll('.container-label').forEach((label) => {
+          if (!label.contains(event.target)) {
+            label.classList.remove('open');
+          }
+        });
       });
-    });
+    }
 
-    const body = document.body;
     const revision = Number(body.dataset.currentRevision || '0');
     if (!Number.isFinite(revision)) {
       return;

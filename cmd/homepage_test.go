@@ -8,6 +8,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	nginx "github.com/dev-tools/devcontainer-nginx/internal/nginx"
 )
 
 func TestExtractDiagnosticsPortMetadata(t *testing.T) {
@@ -209,5 +211,19 @@ func TestRenderShellPageUsesEscapedTerminalNewlines(t *testing.T) {
 	}
 	if !strings.Contains(html, "/shell/ws?profile=") {
 		t.Fatalf("shell page missing websocket route: %s", html)
+	}
+}
+
+func TestFormatHomepageStatusUsesHostnamePortForRoutedEndpoints(t *testing.T) {
+	route := nginx.Route{
+		Hostname:      "8082.hello-world.local.dev-gutools.co.uk",
+		ContainerName: "hello-world",
+		TargetPort:    8081,
+	}
+
+	got := formatHomepageStatus(route, "hello-world", "routed")
+	want := "routed to container hello-world on port 8082"
+	if got != want {
+		t.Fatalf("formatHomepageStatus() = %q, want %q", got, want)
 	}
 }

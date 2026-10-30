@@ -6,7 +6,6 @@ import (
 	"log"
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 )
 
@@ -258,6 +257,19 @@ func (i *Identifier) ExtractApplicationPort(
 				log.Printf("Using published port: %d\n", ports[0])
 				return ports[0]
 			}
+
+			for _, port := range []int{3000, 5173, 8000, 8080, 80} {
+				for _, published := range ports {
+					if port == published {
+						log.Printf("Using common web published port: %d from %v\n", port, ports)
+						return port
+					}
+				}
+			}
+			if len(ports) > 0 {
+				log.Printf("Using first published port: %d from %v\n", ports[0], ports)
+				return ports[0]
+			}
 		}
 		return 0
 	}
@@ -286,9 +298,6 @@ func (i *Identifier) ExtractApplicationPort(
 	return 0
 }
 
-// ExtractRouteTargets returns one or more routes for a container.
-// Single-port containers use the container name as the hostname.
-// Multi-port containers use portsAttributes labels when available.
 func (i *Identifier) ExtractRouteTargets(
 	containerName string,
 	labels map[string]string,
@@ -321,6 +330,46 @@ func (i *Identifier) ExtractRouteTargets(
 		return nil
 	}
 
+	publishedHostPorts := collectPublishedHostPorts(publishedPorts)
+	if len(publishedHostPorts) > 0 {
+		if !hasDevcontainerMetadata(labels) {
+			if len(publishedHostPorts) > 1 {
+				out := make([]RouteTarget, 0, len(publishedHostPorts))
+				for _, hostPort := range publishedHostPorts {
+					out = append(out, RouteTarget{
+						ProjectName:     fmt.Sprintf("%d.%s", hostPort, projectName),
+						ApplicationPort: hostPort,
+					})
+				}
+				log.Printf("Using %d published host-port routes for %s: %v\n", len(out), containerName, out)
+				return out
+			}
+		}
+
+		port := i.ExtractApplicationPort(exposedPorts, publishedPorts, labels)
+		if port > 0 {
+			if len(publishedHostPorts) > 1 || publishedHostPorts[0] != port {
+				out := make([]RouteTarget, 0, len(publishedHostPorts))
+				for _, hostPort := range publishedHostPorts {
+					out = append(out, RouteTarget{
+						ProjectName:     fmt.Sprintf("%d.%s", hostPort, projectName),
+						ApplicationPort: port,
+					})
+				}
+				log.Printf("Using %d published host-port routes for %s: %v\n", len(out), containerName, out)
+				return out
+			}
+		}
+	}
+
+	if !hasDevcontainerMetadata(labels) {
+		fallbackTargets := i.ExtractPlainContainerRouteTargets(containerName, exposedPorts, publishedPorts)
+		if len(fallbackTargets) > 0 {
+			log.Printf("Using plain container fallback routes for %s: %v\n", containerName, fallbackTargets)
+			return fallbackTargets
+		}
+	}
+
 	port := i.ExtractApplicationPort(exposedPorts, publishedPorts, labels)
 	if port == 0 {
 		return nil
@@ -332,202 +381,292 @@ func (i *Identifier) ExtractRouteTargets(
 	}}
 }
 
-func devcontainerModelLabelKeys(labels map[string]string) []string {
-	keys := []string{
+func hasDevcontainerMetadata(labels map[string]string) bool {
+	for key := range labels {
+		if strings.HasPrefix(key, "devcontainer.") || strings.HasPrefix(key, "com.docker.compose.") {
+			return true
+		}
+		if strings.HasSuffix(key, ".devcontainer.model") || strings.HasSuffix(key, ".devcontainer.initial.model") || strings.HasSuffix(key, ".devcontainer.metadata") || strings.HasSuffix(key, ".devcontainer.presentable.name") {
+			return true
+		}
+	}
+	return false
+}
+
+func (i *Identifier) ExtractPlainContainerRouteTargets(
+	containerName string,
+	exposedPorts []int,
+	publishedPorts map[string][]PortBinding,
+) []RouteTarget {
+	baseName := i.ExtractProjectName(containerName, nil)
+	if baseName == "" {
+		return nil
+	}
+
+	containerPorts := collectUniqueContainerPorts(exposedPorts, publishedPorts)
+	if len(containerPorts) == 0 {
+		return nil
+	}
+	sort.Ints(containerPorts)
+
+	publishedHostPorts := collectPublishedHostPorts(publishedPorts)
+	if len(publishedHostPorts) > 1 {
+		out := make([]RouteTarget, 0, len(publishedHostPorts))
+		for _, hostPort := range publishedHostPorts {
+			out = append(out, RouteTarget{
+				ProjectName:     fmt.Sprintf("%d.%s", hostPort, baseName),
+				ApplicationPort: hostPort,
+			})
+		}
+		return out
+	}
+
+	if len(containerPorts) == 1 {
+		return []RouteTarget{{
+			ProjectName:     baseName,
+			ApplicationPort: containerPorts[0],
+		}}
+	}
+
+	defaultPort := choosePreferredPort(containerPorts)
+	if defaultPort == 0 {
+		defaultPort = containerPorts[0]
+	}
+
+	targets := []RouteTarget{{
+		ProjectName:     baseName,
+		ApplicationPort: defaultPort,
+	}}
+	for _, port := range containerPorts {
+		targets = append(targets, RouteTarget{
+			ProjectName:     fmt.Sprintf("%d.%s", port, baseName),
+			ApplicationPort: port,
+		})
+	}
+	return targets
+}
+
+func choosePreferredPort(ports []int) int {
+	if len(ports) == 0 {
+		return 0
+	}
+
+	preferred := []int{3000, 5173, 8000, 8080, 8081, 8082, 80, 443, 8443, 9000}
+	for _, candidate := range preferred {
+		for _, port := range ports {
+			if port == candidate {
+				return port
+			}
+		}
+	}
+
+	copyPorts := append([]int(nil), ports...)
+	sort.Ints(copyPorts)
+	return copyPorts[0]
+}
+
+func collectUniqueContainerPorts(exposedPorts []int, publishedPorts map[string][]PortBinding) []int {
+	seen := make(map[int]bool)
+	out := make([]int, 0, len(exposedPorts))
+	for _, port := range exposedPorts {
+		if port <= 0 || seen[port] {
+			continue
+		}
+		seen[port] = true
+		out = append(out, port)
+	}
+	if len(out) > 0 {
+		return out
+	}
+	for key, bindings := range publishedPorts {
+		if len(bindings) == 0 {
+			continue
+		}
+		port := parsePortKey(key)
+		if port <= 0 || seen[port] {
+			continue
+		}
+		seen[port] = true
+		out = append(out, port)
+	}
+	return out
+}
+
+func collectPublishedHostPorts(publishedPorts map[string][]PortBinding) []int {
+	seen := make(map[int]bool)
+	out := make([]int, 0)
+	for _, bindings := range publishedPorts {
+		for _, binding := range bindings {
+			var port int
+			_, err := fmt.Sscanf(binding.HostPort, "%d", &port)
+			if err != nil || port <= 0 || seen[port] {
+				continue
+			}
+			seen[port] = true
+			out = append(out, port)
+		}
+	}
+	sort.Ints(out)
+	return out
+}
+
+func parsePortKey(key string) int {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return 0
+	}
+	key = strings.TrimSuffix(key, "/tcp")
+	key = strings.TrimSuffix(key, "/udp")
+	var port int
+	_, err := fmt.Sscanf(key, "%d", &port)
+	if err != nil || port <= 0 {
+		return 0
+	}
+	return port
+}
+
+func ParseDevcontainerMetadata(raw string) ([]map[string]any, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return nil, nil
+	}
+
+	var single map[string]any
+	if err := json.Unmarshal([]byte(trimmed), &single); err == nil {
+		return []map[string]any{single}, nil
+	}
+
+	var multi []map[string]any
+	if err := json.Unmarshal([]byte(trimmed), &multi); err == nil {
+		return multi, nil
+	}
+
+	return nil, fmt.Errorf("invalid devcontainer metadata JSON")
+}
+
+func devcontainerMetadataKeys(labels map[string]string) []string {
+	keys := []string{}
+	seen := map[string]bool{}
+	for _, key := range []string{
 		"devcontainer.model",
 		"devcontainer.initial.model",
 		"devcontainer.metadata",
+		"devcontainer.presentable.name",
+	} {
+		if _, ok := labels[key]; ok {
+			keys = append(keys, key)
+			seen[key] = true
+		}
 	}
-	seen := make(map[string]bool, len(keys))
-	for _, key := range keys {
-		seen[key] = true
-	}
-
 	for key := range labels {
-		if strings.HasSuffix(key, ".devcontainer.model") || strings.HasSuffix(key, ".devcontainer.initial.model") || strings.HasSuffix(key, ".devcontainer.metadata") {
+		if strings.HasSuffix(key, ".devcontainer.model") || strings.HasSuffix(key, ".devcontainer.initial.model") || strings.HasSuffix(key, ".devcontainer.metadata") || strings.HasSuffix(key, ".devcontainer.presentable.name") {
 			if !seen[key] {
 				keys = append(keys, key)
 				seen[key] = true
 			}
 		}
 	}
-
 	return keys
 }
 
-func devcontainerPresentableName(labels map[string]string) string {
-	for _, key := range []string{
-		"devcontainer.presentable.name",
-	} {
-		if name := labels[key]; name != "" {
-			return name
-		}
-	}
-	for key, value := range labels {
-		if value == "" {
-			continue
-		}
-		if key == "devcontainer.presentable.name" || strings.HasSuffix(key, ".devcontainer.presentable.name") {
-			return value
-		}
-	}
-	return ""
-}
-
-// Metadata labels can be object-shaped legacy values or spec-compliant arrays of
-// JSON snippets, so accept both shapes when reading them.
-func ParseDevcontainerMetadata(raw string) ([]map[string]any, error) {
-	var value any
-	if err := json.Unmarshal([]byte(raw), &value); err != nil {
-		return nil, err
-	}
-
-	switch metadata := value.(type) {
-	case map[string]any:
-		return []map[string]any{metadata}, nil
-	case []any:
-		documents := make([]map[string]any, 0, len(metadata))
-		for _, item := range metadata {
-			document, ok := item.(map[string]any)
-			if ok {
-				documents = append(documents, document)
-			}
-		}
-		return documents, nil
-	default:
-		return nil, fmt.Errorf("devcontainer metadata must be a JSON object or array")
-	}
+type portLabel struct {
+	Port  int
+	Label string
 }
 
 func extractForwardedPorts(labels map[string]string) []int {
-	labelKeys := devcontainerModelLabelKeys(labels)
-
 	seen := make(map[int]bool)
 	ports := make([]int, 0)
-
-	for _, key := range labelKeys {
+	for _, key := range devcontainerMetadataKeys(labels) {
 		raw, ok := labels[key]
 		if !ok || raw == "" {
 			continue
 		}
-
-		documents, err := ParseDevcontainerMetadata(raw)
+		docs, err := ParseDevcontainerMetadata(raw)
 		if err != nil {
 			continue
 		}
-
-		for _, doc := range documents {
-			forwarded, ok := doc["forwardPorts"]
-			if !ok {
-				continue
-			}
-
-			list, ok := forwarded.([]any)
-			if !ok {
-				continue
-			}
-
-			for _, item := range list {
-				var port int
-				switch v := item.(type) {
-				case float64:
-					port = int(v)
-				case string:
-					p, err := strconv.Atoi(v)
-					if err != nil {
-						continue
-					}
-					port = p
-				default:
-					continue
-				}
-				if port > 0 && port <= 65535 && !seen[port] {
+		for _, doc := range docs {
+			for _, port := range parseForwardedPorts(doc) {
+				if !seen[port] {
 					seen[port] = true
 					ports = append(ports, port)
 				}
 			}
 		}
 	}
-
+	sort.Ints(ports)
 	return ports
 }
 
-type forwardedPortLabel struct {
-	Port  int
-	Label string
-}
-
-func extractForwardedPortLabels(labels map[string]string) []forwardedPortLabel {
-	labelKeys := devcontainerModelLabelKeys(labels)
-
-	seenPorts := make(map[int]bool)
-	var result []forwardedPortLabel
-
-	for _, key := range labelKeys {
+func extractForwardedPortLabels(labels map[string]string) []portLabel {
+	seen := make(map[int]bool)
+	out := make([]portLabel, 0)
+	for _, key := range devcontainerMetadataKeys(labels) {
 		raw, ok := labels[key]
 		if !ok || raw == "" {
 			continue
 		}
-
-		documents, err := ParseDevcontainerMetadata(raw)
+		docs, err := ParseDevcontainerMetadata(raw)
 		if err != nil {
 			continue
 		}
-
-		for _, doc := range documents {
-			forwarded := parseForwardedPortsFromDoc(doc)
-			if len(forwarded) == 0 {
-				continue
-			}
-
-			attrLabels := parsePortsAttributesFromDoc(doc)
-			if len(attrLabels) == 0 {
-				continue
-			}
-
-			for _, port := range forwarded {
-				label, ok := attrLabels[port]
-				if !ok || strings.TrimSpace(label) == "" || seenPorts[port] {
-					continue
+		for _, doc := range docs {
+			for port, label := range parsePortsAttributes(doc) {
+				if !seen[port] {
+					seen[port] = true
+					out = append(out, portLabel{Port: port, Label: label})
 				}
-				seenPorts[port] = true
-				result = append(result, forwardedPortLabel{
-					Port:  port,
-					Label: label,
-				})
 			}
 		}
 	}
-
-	return result
+	sort.Slice(out, func(i, j int) bool { return out[i].Port < out[j].Port })
+	return out
 }
 
-func parseForwardedPortsFromDoc(doc map[string]any) []int {
+func parseForwardedPorts(doc map[string]any) []int {
 	forwardedRaw, ok := doc["forwardPorts"]
 	if !ok {
 		return nil
 	}
 
-	list, ok := forwardedRaw.([]any)
-	if !ok {
-		return nil
-	}
-
-	seen := make(map[int]bool)
-	ports := make([]int, 0, len(list))
-	for _, item := range list {
-		port, ok := parsePortAny(item)
-		if !ok || seen[port] {
-			continue
+	switch value := forwardedRaw.(type) {
+	case []any:
+		seen := make(map[int]bool)
+		ports := make([]int, 0, len(value))
+		for _, item := range value {
+			switch v := item.(type) {
+			case float64:
+				port := int(v)
+				if port > 0 && port <= 65535 && !seen[port] {
+					seen[port] = true
+					ports = append(ports, port)
+				}
+			case string:
+				var port int
+				if _, err := fmt.Sscanf(v, "%d", &port); err == nil && port > 0 && port <= 65535 && !seen[port] {
+					seen[port] = true
+					ports = append(ports, port)
+				}
+			}
 		}
-		seen[port] = true
-		ports = append(ports, port)
+		return ports
+	case []int:
+		return value
+	case []float64:
+		ports := make([]int, 0, len(value))
+		for _, v := range value {
+			port := int(v)
+			if port > 0 && port <= 65535 {
+				ports = append(ports, port)
+			}
+		}
+		return ports
 	}
-
-	return ports
+	return nil
 }
 
-func parsePortsAttributesFromDoc(doc map[string]any) map[int]string {
+func parsePortsAttributes(doc map[string]any) map[int]string {
 	attrsRaw, ok := doc["portsAttributes"]
 	if !ok {
 		return nil
@@ -540,8 +679,8 @@ func parsePortsAttributesFromDoc(doc map[string]any) map[int]string {
 
 	out := make(map[int]string, len(attrs))
 	for portKey, value := range attrs {
-		port, err := strconv.Atoi(portKey)
-		if err != nil || port <= 0 || port > 65535 {
+		var port int
+		if _, err := fmt.Sscanf(portKey, "%d", &port); err != nil || port <= 0 || port > 65535 {
 			continue
 		}
 		valueMap, ok := value.(map[string]any)
@@ -553,85 +692,10 @@ func parsePortsAttributesFromDoc(doc map[string]any) map[int]string {
 			continue
 		}
 		label, ok := labelRaw.(string)
-		if !ok {
+		if !ok || label == "" {
 			continue
 		}
 		out[port] = label
 	}
-
 	return out
-}
-
-func parsePortAny(value any) (int, bool) {
-	switch v := value.(type) {
-	case float64:
-		port := int(v)
-		if !isValidPort(port) {
-			return 0, false
-		}
-		return port, true
-	case string:
-		port, err := strconv.Atoi(v)
-		if err != nil {
-			return 0, false
-		}
-		if !isValidPort(port) {
-			return 0, false
-		}
-		return port, true
-	default:
-		return 0, false
-	}
-}
-
-func isValidPort(port int) bool {
-	return port > 0 && port <= 65535
-}
-
-// ExtractMetadata extracts metadata from a container.
-func (i *Identifier) ExtractMetadata(
-	containerID string,
-	containerName string,
-	labels map[string]string,
-	exposedPorts []int,
-	publishedPorts map[string][]PortBinding,
-	networks []string,
-) *DevContainerMetadata {
-	// Check if this looks like a Dev Container
-	if !i.IsDevContainer(containerName, labels) {
-		return nil
-	}
-
-	// Extract project name
-	projectName := i.ExtractProjectName(containerName, labels)
-	if projectName == "" {
-		log.Printf("Could not extract project name from %s\n", containerName)
-		return nil
-	}
-
-	// Determine application port
-	appPort := i.ExtractApplicationPort(exposedPorts, publishedPorts, labels)
-	if appPort == 0 {
-		log.Printf("WARNING: Container %s: could not determine application port; skipping\n", containerName)
-		return nil
-	}
-
-	// Check networks
-	if len(networks) == 0 {
-		log.Printf("WARNING: Container %s: no networks; skipping\n", containerName)
-		return nil
-	}
-
-	// Sort for consistency
-	sort.Ints(exposedPorts)
-	sort.Strings(networks)
-
-	return &DevContainerMetadata{
-		ContainerID:     containerID,
-		ContainerName:   containerName,
-		ProjectName:     projectName,
-		ApplicationPort: appPort,
-		Networks:        networks,
-		Labels:          labels,
-	}
 }
