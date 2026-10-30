@@ -277,8 +277,41 @@
     }
   }
 
+  function setupAliasForm() {
+    const form = document.getElementById('alias-form');
+    if (!form) {
+      return;
+    }
+
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const formData = new FormData(form);
+      const sourceHostname = (formData.get('sourceHostname') || '').toString().trim();
+      const alias = (formData.get('alias') || '').toString().trim();
+      if (!sourceHostname || !alias) {
+        alert('Choose a mapped domain and enter an alias before submitting.');
+        return;
+      }
+
+      const response = await fetch('/api/aliases', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
+        body: new URLSearchParams({ sourceHostname, alias }),
+      });
+
+      if (!response.ok) {
+        const message = (await response.text()) || 'failed';
+        alert(message);
+        return;
+      }
+
+      location.reload();
+    });
+  }
+
   function setupTunnelPage() {
     const form = document.getElementById('tunnel-form');
+    setupAliasForm();
     if (form) {
       form.addEventListener('submit', async (event) => {
         event.preventDefault();
@@ -516,6 +549,10 @@
 
     if (page === 'command-generator') {
       setupCommandGenerator();
+    }
+
+    if (page === 'alias-page') {
+      setupAliasForm();
     }
   });
 })();

@@ -1,0 +1,17 @@
+Aliases page
+
+This page creates and manages additional hostnames that point at an existing mapped service without changing the original route.
+
+How to use it:
+- Choose a mapped domain from the list to use as the source host.
+- Enter a second hostname such as hello.local.dev-gutools.co.uk or a customer-facing alias for that route.
+- Click Add alias to create the secondary hostname and reload the page.
+- Use Delete on any alias entry to remove it when it is no longer needed.
+
+Requirements:
+- The source hostname must already be mapped and active in the current devcontainer-nginx configuration.
+- The alias must be a valid hostname and must not already be in use.
+- The generated nginx config must reload successfully before the alias becomes available.
+
+Aliases are useful when one service needs a friendly or temporary hostname while still sharing the same underlying route and backend.
+

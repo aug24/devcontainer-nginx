@@ -57,13 +57,19 @@ func (ds *DiagnosticsState) Revision() uint64 {
 	return ds.revision
 }
 
+func debugLogf(format string, args ...interface{}) {
+	if os.Getenv("DEVCONTAINER_NGINX_DEBUG") == "1" {
+		log.Printf(format, args...)
+	}
+}
+
 func diagnoseContainer(
 	containerInfo *discovery.ContainerInfo,
 	identifier *discovery.Identifier,
 	resolver *discovery.NetworkResolver,
 	baseDomain string,
 ) ([]nginx.Route, ContainerDiagnostic) {
-	log.Printf("Evaluating container %s: labels=%v exposed=%v publishedKeys=%v networks=%v\n",
+	debugLogf("Evaluating container %s: labels=%v exposed=%v publishedKeys=%v networks=%v\n",
 		containerInfo.Name,
 		containerInfo.Labels,
 		containerInfo.ExposedPorts,
@@ -84,7 +90,7 @@ func diagnoseContainer(
 	}
 
 	isDev := identifier.IsDevContainer(containerInfo.Name, containerInfo.Labels)
-	log.Printf("Container %s isDevContainer=%t\n", containerInfo.Name, isDev)
+	debugLogf("Container %s isDevContainer=%t\n", containerInfo.Name, isDev)
 	if !isDev {
 		diag.Reason = "not identified as a dev container"
 		return nil, diag
@@ -104,7 +110,7 @@ func diagnoseContainer(
 		containerInfo.ExposedPorts,
 		containerInfo.PublishedPorts,
 	)
-	log.Printf("Container %s route targets: %#v\n", containerInfo.Name, targets)
+	debugLogf("Container %s route targets: %#v\n", containerInfo.Name, targets)
 	if len(targets) == 0 {
 		diag.Reason = "no route targets found"
 		return nil, diag
@@ -132,9 +138,9 @@ func diagnoseContainer(
 					TargetHost:    "host.docker.internal",
 					TargetPort:    target.ApplicationPort,
 				}
-				log.Printf("Resolved route via forwarded port: %s -> host.docker.internal:%d\n", hostname, target.ApplicationPort)
+				debugLogf("Resolved route via forwarded port: %s -> host.docker.internal:%d\n", hostname, target.ApplicationPort)
 			} else {
-				log.Printf("Skipping resolved route for %s/%d: no shared network and not forwarded\n", containerInfo.Name, target.ApplicationPort)
+				debugLogf("Skipping resolved route for %s/%d: no shared network and not forwarded\n", containerInfo.Name, target.ApplicationPort)
 				continue
 			}
 		}
@@ -256,7 +262,7 @@ func summarizeContainerMetadata(containerInfo *discovery.ContainerInfo) string {
 
 func extractDiagnosticsPortMetadata(labels map[string]string) ([]int, map[int]string) {
 	labelKeys := devcontainerModelLabelKeys(labels)
-	log.Println("Labels:", labelKeys)
+	debugLogf("Devcontainer metadata keys: %v\n", labelKeys)
 
 	seenPorts := make(map[int]bool)
 	portLabels := make(map[int]string)
@@ -268,9 +274,6 @@ func extractDiagnosticsPortMetadata(labels map[string]string) ([]int, map[int]st
 			continue
 		}
 
-		log.Println("Found Label:", key)
-		log.Println("Raw Value:", raw)
-
 		documents, err := discovery.ParseDevcontainerMetadata(raw)
 		if err != nil {
 			continue
@@ -278,7 +281,6 @@ func extractDiagnosticsPortMetadata(labels map[string]string) ([]int, map[int]st
 
 		for _, doc := range documents {
 			for _, port := range parseDiagnosticsForwardedPorts(doc) {
-				log.Println("Found Forwarded Port:", port)
 				if !seenPorts[port] {
 					seenPorts[port] = true
 					forwardedPorts = append(forwardedPorts, port)
@@ -286,7 +288,6 @@ func extractDiagnosticsPortMetadata(labels map[string]string) ([]int, map[int]st
 			}
 
 			for port, label := range parseDiagnosticsPortsAttributes(doc) {
-				log.Println("Found Port Attribute:", port, "Label:", label)
 				portLabels[port] = label
 			}
 		}
@@ -422,6 +423,7 @@ func renderHomepageHTML(rows []ContainerDiagnostic, revision uint64, endpointRow
 	b.WriteString("<li><a href=\"/tunnels\">Start or stop tunnels to services</a></li>")
 	b.WriteString("<li><a href=\"/shell-launch\">Open a shell in a new tab</a></li>")
 	b.WriteString("<li><a href=\"/remote-shell-launch\">Open a bastion shell in a new tab</a></li>")
+	b.WriteString("<li><a href=\"/aliases\">Manage hostname aliases</a></li>")
 	b.WriteString("</ul>")
 	b.WriteString(renderHelpSection("homepage"))
 	b.WriteString("<h2>Debugging Container Services</h2><ul>")

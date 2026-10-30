@@ -74,7 +74,8 @@ func main() {
 	homepageState := &DiagnosticsState{}
 	tunnelManager := NewTunnelManager()
 	tunnelManager.BindConfig(*baseDomain, configGen)
-	startHomepageServer(ctx, "/etc/nginx/nginx.conf", *nginxConfigPath, configGen, homepageState, tunnelManager, baseDomain)
+	aliasManager := NewAliasManager()
+	startHomepageServer(ctx, "/etc/nginx/nginx.conf", *nginxConfigPath, configGen, homepageState, tunnelManager, aliasManager, baseDomain)
 
 	identifier := discovery.NewIdentifier()
 	proxyID := os.Getenv("PROXY_CONTAINER_ID")
@@ -100,10 +101,10 @@ func main() {
 	}
 
 	log.Println("Performing initial reconciliation")
-	reconcileRoutes(ctx, dockerClient, identifier, resolver, configGen, homepageState, proxyID, *baseDomain, tunnelManager)
+	reconcileRoutes(ctx, dockerClient, identifier, resolver, configGen, homepageState, proxyID, *baseDomain, tunnelManager, aliasManager)
 	startAWSProfileCleanup(ctx, 5*time.Minute)
 
-	go watchEvents(ctx, dockerClient, identifier, resolver, configGen, homepageState, proxyID, *baseDomain, tunnelManager, time.Duration(*debounceMs)*time.Millisecond)
+	go watchEvents(ctx, dockerClient, identifier, resolver, configGen, homepageState, proxyID, *baseDomain, tunnelManager, aliasManager, time.Duration(*debounceMs)*time.Millisecond)
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGTERM, syscall.SIGINT)
@@ -123,6 +124,7 @@ func reconcileRoutes(
 	proxyID string,
 	baseDomain string,
 	tunnelManager *TunnelManager,
+	aliasManager *AliasManager,
 ) {
 	containers, err := dockerClient.ListContainers(ctx)
 	if err != nil {
@@ -167,6 +169,9 @@ func reconcileRoutes(
 	}
 
 	routes = ensureRouteWildcardCerts(routes, baseDomain)
+	if aliasManager != nil {
+		routes = aliasManager.MergeRoutes(routes)
+	}
 
 	homepageState.Set(homepageRows)
 
@@ -195,7 +200,7 @@ func reconcileRoutes(
 	log.Printf("Successfully updated routes with %d entries\n", len(routes))
 }
 
-func startHomepageServer(ctx context.Context, nginxBasePath, generatedConfigPath string, configGen *nginx.ConfigGenerator, homepageState *DiagnosticsState, tunnelManager *TunnelManager, baseDomain *string) {
+func startHomepageServer(ctx context.Context, nginxBasePath, generatedConfigPath string, configGen *nginx.ConfigGenerator, homepageState *DiagnosticsState, tunnelManager *TunnelManager, aliasManager *AliasManager, baseDomain *string) {
 	mux := http.NewServeMux()
 	logPath := filepath.Join("/var/log/devcontainer-nginx", "devcontainer-nginx.log")
 	staticDir := resolveStaticDir()
@@ -241,6 +246,50 @@ func startHomepageServer(ctx context.Context, nginxBasePath, generatedConfigPath
 			generatedConfigPath,
 			string(generatedConfig),
 		)
+	})
+
+	mux.HandleFunc("/api/aliases", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPost:
+			defer r.Body.Close()
+			if err := r.ParseForm(); err != nil {
+				http.Error(w, "invalid form: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+			sourceHostname := strings.TrimSpace(r.FormValue("sourceHostname"))
+			alias := strings.TrimSpace(r.FormValue("alias"))
+			if _, err := aliasManager.AddAlias(sourceHostname, alias, *baseDomain, configGen.CurrentRoutes()); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			merged := aliasManager.MergeRoutes(configGen.CurrentRoutes())
+			if err := configGen.ApplyRoutes(merged); err != nil {
+				http.Error(w, "failed to add alias routes: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+			if !configGen.ValidateConfig() {
+				http.Error(w, "generated config is invalid", http.StatusInternalServerError)
+				return
+			}
+			if !configGen.ReloadNginx() {
+				http.Error(w, "failed to reload nginx after alias creation", http.StatusInternalServerError)
+				return
+			}
+			http.Redirect(w, r, "/aliases", http.StatusSeeOther)
+		case http.MethodGet:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+
+	mux.HandleFunc("/aliases", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(renderAliasPage(routeHostnames(configGen.CurrentRoutes()), aliasManager.Snapshot())))
 	})
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -373,7 +422,7 @@ func startHomepageServer(ctx context.Context, nginxBasePath, generatedConfigPath
 		switch r.Method {
 		case http.MethodGet:
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			_, _ = w.Write([]byte(renderTunnelPage(tunnelManager.AWSConfigSnapshot(), tunnelManager.Snapshot())))
+			_, _ = w.Write([]byte(renderTunnelPage(tunnelManager.AWSConfigSnapshot(), tunnelManager.Snapshot(), routeHostnames(configGen.CurrentRoutes()))))
 		case http.MethodPost:
 			defer r.Body.Close()
 			var request TunnelRequest
@@ -616,6 +665,7 @@ func watchEvents(
 	proxyID string,
 	baseDomain string,
 	tunnelManager *TunnelManager,
+	aliasManager *AliasManager,
 	debounce time.Duration,
 ) {
 	messages, errors := dockerClient.WatchEvents(ctx)
@@ -637,7 +687,7 @@ func watchEvents(
 		case <-ticker.C:
 			if needsReconcile {
 				needsReconcile = false
-				reconcileRoutes(ctx, dockerClient, identifier, resolver, configGen, homepageState, proxyID, baseDomain, tunnelManager)
+				reconcileRoutes(ctx, dockerClient, identifier, resolver, configGen, homepageState, proxyID, baseDomain, tunnelManager, aliasManager)
 			}
 		}
 	}
@@ -1088,3 +1138,4 @@ func (tunnelManager *TunnelManager) RegisterShellRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/remote-shell-launch", tunnelManager.RemoteShellLaunch)
 	mux.HandleFunc("/remote-shell/ws", tunnelManager.RemoteShellWS)
 }
+

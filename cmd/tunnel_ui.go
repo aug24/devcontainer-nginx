@@ -28,7 +28,7 @@ func renderAWSConfigPage(cfg AWSConfig) string {
 	return b.String()
 }
 
-func renderTunnelPage(cfg AWSConfig, tunnels []TunnelEntry) string {
+func renderTunnelPage(cfg AWSConfig, tunnels []TunnelEntry, mappedHostnames []string) string {
 	var b strings.Builder
 	b.WriteString("<!doctype html><html><head><meta charset=\"utf-8\"><title>Devcontainer Nginx: Tunnels</title>")
 	b.WriteString(renderStylesheetLink())
@@ -81,7 +81,53 @@ func renderTunnelPage(cfg AWSConfig, tunnels []TunnelEntry) string {
 		}
 	}
 	b.WriteString("</tbody></table></div>")
+	b.WriteString("<p><a href=\"/aliases\">Manage hostname aliases</a></p>")
 	b.WriteString(renderHelpSection("tunnels"))
+	b.WriteString("<script src=\"/static/app.js\"></script>")
+	b.WriteString("</body></html>")
+	return b.String()
+}
+
+func renderAliasPage(mappedHostnames []string, aliases []AliasEntry) string {
+	var b strings.Builder
+	b.WriteString("<!doctype html><html><head><meta charset=\"utf-8\"><title>Devcontainer Nginx: Aliases</title>")
+	b.WriteString(renderStylesheetLink())
+	b.WriteString(renderFaviconLink())
+	b.WriteString("</head><body data-page=\"alias-page\">")
+	b.WriteString(renderPageHeader("Aliases"))
+	b.WriteString("<p class=\"muted\">Create a secondary hostname that points at an existing mapped route.</p>")
+	b.WriteString("<p><a href=\"/\">Home</a> | <a href=\"/tunnels\">Tunnels</a></p>")
+	b.WriteString("<form id=\"alias-form\" method=\"post\" action=\"/api/aliases\">")
+	b.WriteString("<div class=\"row\"><div><label>Mapped domain</label><select name=\"sourceHostname\" id=\"alias-source\">")
+	if len(mappedHostnames) == 0 {
+		b.WriteString("<option value=\"\">No mapped domains</option>")
+	} else {
+		for _, hostname := range mappedHostnames {
+			b.WriteString("<option value=\"" + html.EscapeString(hostname) + "\">" + html.EscapeString(hostname) + "</option>")
+		}
+	}
+	b.WriteString("</select></div><div><label>Alias</label><input name=\"alias\" id=\"alias-value\" placeholder=\"hello.local.dev-gutools.co.uk\" /></div></div>")
+	if len(mappedHostnames) == 0 {
+		b.WriteString("<div><button type=\"submit\" disabled>No mapped domains</button></div>")
+	} else {
+		b.WriteString("<div><button type=\"submit\">Add alias</button></div>")
+	}
+	b.WriteString("</form>")
+	b.WriteString("<h2>Existing aliases</h2>")
+	b.WriteString("<div class=\"table-wrap\"><table><thead><tr><th>Source</th><th>Alias</th><th>Actions</th></tr></thead><tbody>")
+	if len(aliases) == 0 {
+		b.WriteString("<tr><td colspan=\"3\">No aliases configured yet.</td></tr>")
+	} else {
+		for _, alias := range aliases {
+			b.WriteString("<tr>")
+			b.WriteString("<td>" + html.EscapeString(alias.SourceHostname) + "</td>")
+			b.WriteString("<td>" + html.EscapeString(alias.AliasHostname) + "</td>")
+			b.WriteString("<td><button data-delete-alias=\"" + html.EscapeString(alias.AliasHostname) + "\">Delete</button></td>")
+			b.WriteString("</tr>")
+		}
+	}
+	b.WriteString("</tbody></table></div>")
+	b.WriteString(renderHelpSection("aliases"))
 	b.WriteString("<script src=\"/static/app.js\"></script>")
 	b.WriteString("</body></html>")
 	return b.String()
